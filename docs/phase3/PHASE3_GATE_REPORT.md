@@ -3,8 +3,8 @@
 Date: 2026-10-31. Details: `CAPITAL_DEMO_READONLY_HARDENING_REPORT.md`.
 
 ## Gate A — Contract completeness: PASS against documentation and mocks only
-## Gate B — Authenticated Demo read-only: NOT RUN
-Credentials are stored, but using them awaits owner approval.
+## Gate B — Authenticated Demo read-only: NO EVIDENCE
+The owner's first run crashed on its output path after the probe, so no results were recorded. The run must be repeated.
 ## Gate C — Verified Demo order: BLOCKED
 Execution is disabled, and needs Gate B and separate authorization.
 ## Gate D — Autonomous Demo: BLOCKED

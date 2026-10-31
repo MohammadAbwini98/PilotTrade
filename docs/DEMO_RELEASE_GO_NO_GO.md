@@ -2,7 +2,7 @@
 
 Status on 2026-10-31:
 
-- **Read-only Demo: NO-GO.** The code is ready for the evidence run, but no authenticated request has been made.
+- **Read-only Demo: NO-GO.** The code is ready for the evidence run, but no evidence exists: the first attempt crashed on its output path after the probe, losing the results. "Not run" below means no recorded result.
 - **Demo execution: NO-GO, and disabled in code.** It needs separate authorization after the read-only gate passes.
 - **Live: LOCKED.** Any request for Live stops startup.
 - **macOS arm64: unverified.** It publishes from Windows, but has not run on a Mac. CI covers this once the branch is pushed.

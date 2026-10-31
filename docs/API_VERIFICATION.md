@@ -1,6 +1,6 @@
 # API Verification
 
-Reviewed 2026-10-31 from documentation and mocks. **No authenticated Capital.com request has been made.** This file records no real broker validation until sanitized evidence exists.
+Reviewed 2026-10-31 from documentation and mocks. **No authenticated result has been recorded:** the owner's first evidence run on 2026-10-31 crashed on its output path after the probe, losing the results. This file records no real broker validation until sanitized evidence exists.
 
 ## Capital.com
 - Demo base: https://demo-api-capital.backend-capital.com

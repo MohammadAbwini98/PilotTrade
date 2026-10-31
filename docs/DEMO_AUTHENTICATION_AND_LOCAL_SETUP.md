@@ -38,7 +38,7 @@ Live values stop startup. Order submission stays disabled in every mode.
 This logs in with the stored Demo credentials, and uses session and read endpoints only. Run it during market hours, once per instrument:
 
 ```bash
-dotnet run --project src/PilotTrade.Api -- --demo-readonly-evidence docs/phase3/demo-readonly-evidence.json --epic EURUSD
+dotnet run --project src/PilotTrade.Api -- --demo-readonly-evidence "$PWD/docs/phase3/demo-readonly-evidence.json" --epic EURUSD
 ```
 
 Review the file before sharing or committing it. It should hold only a masked account ID and step results.

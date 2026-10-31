@@ -11,7 +11,7 @@ The `Credentials` and `OwnerAuthorization` categories (50 passed, 3 skipped) als
 
 ## Not verified
 
-- Real Capital.com behaviour: no authenticated request has been made.
+- Real Capital.com behaviour: no result has been recorded. The first evidence run crashed on its output path after the probe, losing the results.
 - macOS at runtime: tests and smoke test run only in CI, which needs a push.
 - Owner flow of the published-app smoke test: skipped locally to keep the real owner token untouched; CI runs it on fresh machines.
 - UI against the real API: the built UI was driven against a local stub only, and has no automated test suite.

@@ -2,7 +2,7 @@
 
 Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `master` at `c1679ba`.
 
-**Result: the code is ready for the authenticated read-only evidence run, and read-only Demo remains NO-GO until it passes.** No authenticated Capital.com request was made, so nothing here is real broker validation. Demo execution is disabled and Live is locked.
+**Result: the code is ready for the authenticated read-only evidence run, and read-only Demo remains NO-GO until it passes.** No authenticated Capital.com result has been recorded, so nothing here is real broker validation. Demo execution is disabled and Live is locked.
 
 ## What changed
 
@@ -38,7 +38,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 
 ## Not verified
 
-- **Real Capital.com API:** never called. Field shapes come from documentation.
+- **Real Capital.com API:** no recorded result. The owner's first evidence run crashed on its output path after the probe, losing the results, and that path bug is now fixed. Field shapes come from documentation.
 - **macOS at runtime:** the macOS tests and smoke test have never run. They run in CI after a push.
 - **Published smoke test owner flow:** written but never run. It was skipped locally so the real owner token stayed unread, and CI will be its first run. The same flow is tested in-process.
 - **Workflow changes:** `build.yml` has not been run.
@@ -46,7 +46,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 
 ## Remaining blockers
 
-1. The authenticated evidence run needs owner approval.
+1. The authenticated evidence run must be repeated by the owner during market hours.
 2. A push is needed for macOS and CI verification.
 3. Before the execution phase: Capital.com documents no margin-used or realized-P&L field, so the risk engine rejects all Capital orders. Solving this needs a proven data source or an owner-approved policy decision.
 4. Build logs remain in 5 older commits of the public repository. History was not rewritten. A pattern search of all commits found no known credential shapes, but it cannot prove the logs hold nothing private.

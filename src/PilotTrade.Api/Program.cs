@@ -81,12 +81,16 @@ var evidenceIndex = Array.IndexOf(args, "--demo-readonly-evidence");
 if (evidenceIndex >= 0)
 {
     if (evidenceIndex + 1 >= args.Length) { Console.Error.WriteLine("Usage: --demo-readonly-evidence <output.json> [--epic EPIC]"); Environment.ExitCode = 2; return; }
+    // dotnet run starts in the project folder, so check the resolved path before spending any broker requests.
+    var evidencePath = Path.GetFullPath(args[evidenceIndex + 1]);
+    if (!Directory.Exists(Path.GetDirectoryName(evidencePath))) { Console.Error.WriteLine($"Evidence folder not found for {evidencePath}. No broker request was made."); Environment.ExitCode = 2; return; }
     var epicIndex = Array.IndexOf(args, "--epic");
     var probeEpic = epicIndex >= 0 && epicIndex + 1 < args.Length ? args[epicIndex + 1] : "EURUSD";
     var probeAccount = string.IsNullOrWhiteSpace(app.Configuration["TRADING_ACCOUNT_ID"]) ? null : runtime.AccountId;
     var adapter = app.Services.GetRequiredService<BrokerAdapterFactory>().CreateCapitalDemo(probeAccount);
     var evidence = await new DemoReadOnlyProbe(adapter, app.Services.GetRequiredService<IClock>()).RunAsync(probeAccount, probeEpic, CancellationToken.None);
-    await File.WriteAllTextAsync(args[evidenceIndex + 1], JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true }));
+    await File.WriteAllTextAsync(evidencePath, JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"Evidence written to {evidencePath}");
     Console.WriteLine(evidence.AllPassed ? "All read-only steps passed." : "One or more read-only steps failed.");
     Environment.ExitCode = evidence.AllPassed ? 0 : 1;
     return;
