@@ -124,17 +124,27 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
         var resp = await http.GetAsync($"/api/v1/accounts", ct);
         resp.EnsureSuccessStatusCode();
         var json = await resp.Content.ReadAsStringAsync(ct);
-        // Best-effort parse; real schema verification required.
         using var doc = JsonDocument.Parse(json);
         decimal balance = 0, equity = 0, free = 0, margin = 0, unreal = 0;
-        if (doc.RootElement.TryGetProperty("accounts", out var accs) && accs.GetArrayLength() > 0)
+        string currency = "USD";
+        string resolvedAccountId = accountId;
+        if (doc.RootElement.TryGetProperty("accounts", out var accs) && accs.ValueKind == JsonValueKind.Array && accs.GetArrayLength() > 0)
         {
             var a = accs[0];
-            if (a.TryGetProperty("balance", out var b)) balance = b.GetDecimal();
-            if (a.TryGetProperty("equity", out var e)) equity = e.GetDecimal();
-            if (a.TryGetProperty("available", out var av)) free = av.GetDecimal();
+            if (a.TryGetProperty("accountId", out var aid) && aid.ValueKind == JsonValueKind.String) resolvedAccountId = aid.GetString() ?? resolvedAccountId;
+            if (a.TryGetProperty("currency", out var c) && c.ValueKind == JsonValueKind.String) currency = c.GetString() ?? currency;
+            if (a.TryGetProperty("balance", out var bal) && bal.ValueKind == JsonValueKind.Object)
+            {
+                if (bal.TryGetProperty("balance", out var b) && b.ValueKind == JsonValueKind.Number) balance = b.GetDecimal();
+                if (bal.TryGetProperty("profitLoss", out var pl) && pl.ValueKind == JsonValueKind.Number) unreal = pl.GetDecimal();
+                if (bal.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.Number) free = av.GetDecimal();
+            }
+            else if (a.TryGetProperty("balance", out var b2) && b2.ValueKind == JsonValueKind.Number) balance = b2.GetDecimal();
+            if (a.TryGetProperty("equity", out var e) && e.ValueKind == JsonValueKind.Number) equity = e.GetDecimal();
+            if (equity == 0) equity = balance + unreal;
+            if (free == 0 && a.TryGetProperty("available", out var av2) && av2.ValueKind == JsonValueKind.Number) free = av2.GetDecimal();
         }
-        return new BrokerAccount(accountId, _config.Environment, "USD", balance, equity == 0 ? balance : equity, free, margin, unreal, 0m, _clock.UtcNow);
+        return new BrokerAccount(resolvedAccountId, _config.Environment, currency, balance, equity == 0 ? balance : equity, free, margin, unreal, 0m, _clock.UtcNow);
     }
 
     public async Task<IReadOnlyList<InstrumentMetadata>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct)
@@ -192,11 +202,11 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
                 {
                     var ot = p.TryGetProperty("snapshotTimeUTC", out var st) ? DateTimeOffset.Parse(st.GetString()!) : DateTimeOffset.UtcNow;
                     list.Add(new Candle(epic, timeframe, ot, ot, true,
-                        p.TryGetProperty("openPrice", out var o) && o.TryGetProperty("bid", out var ob) ? ob.GetDecimal() : 0m,
-                        p.TryGetProperty("highPrice", out var h) && h.TryGetProperty("bid", out var hb) ? hb.GetDecimal() : 0m,
-                        p.TryGetProperty("lowPrice", out var l) && l.TryGetProperty("bid", out var lb) ? lb.GetDecimal() : 0m,
-                        p.TryGetProperty("closePrice", out var c) && c.TryGetProperty("bid", out var cb) ? cb.GetDecimal() : 0m,
-                        p.TryGetProperty("lastTradedVolume", out var v) ? v.GetDecimal() : null));
+                        p.TryGetProperty("openPrice", out var o) && o.TryGetProperty("bid", out var ob) && ob.ValueKind == JsonValueKind.Number ? ob.GetDecimal() : 0m,
+                        p.TryGetProperty("highPrice", out var h) && h.TryGetProperty("bid", out var hb) && hb.ValueKind == JsonValueKind.Number ? hb.GetDecimal() : 0m,
+                        p.TryGetProperty("lowPrice", out var l) && l.TryGetProperty("bid", out var lb) && lb.ValueKind == JsonValueKind.Number ? lb.GetDecimal() : 0m,
+                        p.TryGetProperty("closePrice", out var c) && c.TryGetProperty("bid", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetDecimal() : 0m,
+                        p.TryGetProperty("lastTradedVolume", out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null));
                 }
             }
         }
@@ -223,7 +233,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
                     var epic = p.TryGetProperty("market", out var m) && m.TryGetProperty("epic", out var e) ? e.GetString() ?? "" : "";
                     var dealId = p.TryGetProperty("position", out var pos) && pos.TryGetProperty("dealId", out var d) ? d.GetString() ?? "" : "";
                     var direction = p.TryGetProperty("position", out var pos2) && pos2.TryGetProperty("direction", out var dir) && dir.GetString() == "SELL" ? OrderSide.Sell : OrderSide.Buy;
-                    var size = p.TryGetProperty("position", out var pos3) && pos3.TryGetProperty("size", out var sz) ? sz.GetDecimal() : 0m;
+                    var size = p.TryGetProperty("position", out var pos3) && pos3.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetDecimal() : 0m;
                     list.Add(new Position(dealId, accountId, _config.Environment, epic, direction, size, null, null, null, null, null, _clock.UtcNow, _clock.UtcNow));
                 }
             }
