@@ -13,7 +13,8 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
 {
     private readonly BrokerEnvironmentConfig _config;
     private readonly ISecretStore _secrets;
-    private readonly IHttpClientFactory _httpFactory;
+    private readonly IHttpClientFactory? _httpFactory;
+    private readonly HttpClient? _httpClient;
     private readonly IClock _clock;
     private readonly IIdGenerator _ids;
     private BrokerSession? _session;
@@ -22,6 +23,23 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
     public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory httpFactory, IClock clock, IIdGenerator ids)
     {
         _config = config; _secrets = secrets; _httpFactory = httpFactory; _clock = clock; _ids = ids;
+    }
+
+    public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, HttpClient httpClient, IClock clock, IIdGenerator ids)
+    {
+        _config = config; _secrets = secrets; _httpClient = httpClient; _clock = clock; _ids = ids;
+    }
+
+    private HttpClient CreateHttp()
+    {
+        if (_httpClient is not null)
+        {
+            if (_httpClient.BaseAddress is null) _httpClient.BaseAddress = new Uri(_config.ApiBaseUri);
+            return _httpClient;
+        }
+        var http = _httpFactory!.CreateClient("capital");
+        http.BaseAddress = new Uri(_config.ApiBaseUri);
+        return http;
     }
 
     public TradingEnvironment Environment => _config.Environment;
@@ -36,8 +54,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
             var apiKey = await _secrets.GetAsync($"capital:{_config.Environment}:api_key", ct) ?? throw new InvalidOperationException("Missing API key");
             var identifier = await _secrets.GetAsync($"capital:{_config.Environment}:identifier", ct) ?? throw new InvalidOperationException("Missing identifier");
             var password = await _secrets.GetAsync($"capital:{_config.Environment}:password", ct) ?? throw new InvalidOperationException("Missing password");
-            var http = _httpFactory.CreateClient("capital");
-            http.BaseAddress = new Uri(_config.ApiBaseUri);
+            var http = CreateHttp();
             var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/session");
             req.Headers.Add("X-CAP-API-KEY", apiKey);
             var body = JsonSerializer.Serialize(new { identifier, password, encryptedPassword = false });
@@ -54,8 +71,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
 
     private HttpClient ClientWithSession(BrokerSession s)
     {
-        var http = _httpFactory.CreateClient("capital");
-        http.BaseAddress = new Uri(_config.ApiBaseUri);
+        var http = CreateHttp();
         http.DefaultRequestHeaders.Add("CST", s.CstToken);
         http.DefaultRequestHeaders.Add("X-SECURITY-TOKEN", s.SecurityToken);
         return http;

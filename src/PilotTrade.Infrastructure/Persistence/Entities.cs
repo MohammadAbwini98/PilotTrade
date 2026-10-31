@@ -120,3 +120,16 @@ public class JevEvaluationEntity
     public string AnswersJson { get; set; } = "";
     public DateTimeOffset ProducedUtc { get; set; }
 }
+
+public class ExecutionStateEntity
+{
+    public string Id { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public bool KillSwitchEngaged { get; set; }
+    public string Mode { get; set; } = "MonitorOnly";
+    public bool LiveArmed { get; set; }
+    public DateTimeOffset? LiveArmedUntilUtc { get; set; }
+    public string? SuspensionReason { get; set; }
+    public DateTimeOffset UpdatedUtc { get; set; }
+}

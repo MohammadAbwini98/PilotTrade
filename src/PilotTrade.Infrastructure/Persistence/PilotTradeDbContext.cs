@@ -14,6 +14,7 @@ public class PilotTradeDbContext : DbContext
     public DbSet<DecisionEntity> Decisions => Set<DecisionEntity>();
     public DbSet<ClaudeAnalysisEntity> ClaudeAnalyses => Set<ClaudeAnalysisEntity>();
     public DbSet<JevEvaluationEntity> JevEvaluations => Set<JevEvaluationEntity>();
+    public DbSet<ExecutionStateEntity> ExecutionStates => Set<ExecutionStateEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -25,5 +26,6 @@ public class PilotTradeDbContext : DbContext
         modelBuilder.Entity<DecisionEntity>().HasKey(x => x.DecisionId);
         modelBuilder.Entity<ClaudeAnalysisEntity>().HasKey(x => x.AnalysisId);
         modelBuilder.Entity<JevEvaluationEntity>().HasKey(x => x.EvaluationId);
+        modelBuilder.Entity<ExecutionStateEntity>().HasKey(x => x.Id);
     }
 }

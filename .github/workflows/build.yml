@@ -1,0 +1,51 @@
+name: Build and Test
+
+on: [push, pull_request]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+        working-directory: src/PilotTrade.Web
+      - run: npm run build
+        working-directory: src/PilotTrade.Web
+      - run: dotnet test PilotTrade.slnx
+      - run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r win-x64 --self-contained true -o release/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: release/win-x64
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+        working-directory: src/PilotTrade.Web
+      - run: npm run build
+        working-directory: src/PilotTrade.Web
+      - run: dotnet test PilotTrade.slnx
+      - run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r osx-arm64 --self-contained true -o release/osx-arm64
+      - name: Smoke test
+        run: |
+          ./release/osx-arm64/PilotTrade.Api --urls http://127.0.0.1:5100 &
+          sleep 8
+          curl -fsS http://127.0.0.1:5100/health
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osx-arm64
+          path: release/osx-arm64

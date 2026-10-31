@@ -21,13 +21,15 @@ builder.Services.AddSingleton<IIdGenerator, GuidIdGenerator>();
 builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
     ? new DpapiSecretStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PilotTrade", "secrets"))
     : new InMemorySecretStore());
-builder.Services.AddSingleton<ITradingControl, DefaultTradingControl>();
+builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
+var envStr = builder.Configuration["TRADING_ENVIRONMENT"] ?? "demo";
+var env = envStr.Equals("live", StringComparison.OrdinalIgnoreCase) ? TradingEnvironment.Live : TradingEnvironment.Demo;
+var accountId = builder.Configuration["TRADING_ACCOUNT_ID"] ?? "SIM-ACC";
+builder.Services.AddSingleton<ITradingControl>(sp => new PersistedTradingControl(sp.GetRequiredService<IPersistedExecutionState>(), env, accountId, sp.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IBrokerSessionFactory, BrokerAdapterFactory>();
 builder.Services.AddSingleton<IBrokerAdapter>(sp =>
 {
     var factory = sp.GetRequiredService<IBrokerSessionFactory>();
-    var envStr = builder.Configuration["TRADING_ENVIRONMENT"] ?? "demo";
-    var env = envStr.Equals("live", StringComparison.OrdinalIgnoreCase) ? TradingEnvironment.Live : TradingEnvironment.Demo;
     return factory.Create(env);
 });
 builder.Services.AddSingleton<IInstrumentCatalog>(sp => new InstrumentCatalogService(sp.GetRequiredService<IBrokerAdapter>()));
