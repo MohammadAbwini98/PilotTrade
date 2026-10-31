@@ -13,6 +13,7 @@ export default function App() {
   const [account, setAccount] = useState<Account | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [snapshot, setSnapshot] = useState<any>(null)
+  const [conn, setConn] = useState<any>(null)
   const [err, setErr] = useState<string>('')
 
   const search = async () => {
@@ -29,6 +30,13 @@ export default function App() {
       setAccount(await r.json())
       const pr = await fetch(`${API}/api/positions?accountId=SIM-ACC`)
       setPositions(await pr.json())
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  const testConnection = async () => {
+    try {
+      const r = await fetch(`${API}/api/demo/test-connection`, { method: 'POST' })
+      setConn(await r.json())
     } catch (e: any) { setErr(e.message) }
   }
 
@@ -59,6 +67,8 @@ export default function App() {
           <h3>Account</h3>
           {account && <div>Balance {account.balance.toFixed(2)} {account.currency} | Equity {account.equity.toFixed(2)} | Free {account.freeMargin.toFixed(2)}</div>}
           <button onClick={loadAccount}>Refresh</button>
+          <button onClick={testConnection}>Test Demo Connection</button>
+          {conn && <pre style={{ background: '#111', padding: 8, fontSize: 12 }}>{JSON.stringify(conn, null, 2)}</pre>}
           <h3>Positions</h3>
           <ul>{positions.map(p => <li key={p.positionId}>{p.epic} {p.direction === 0 ? 'BUY' : 'SELL'} {p.size} PnL {p.unrealizedPnL?.toFixed(2)}</li>)}</ul>
         </div>

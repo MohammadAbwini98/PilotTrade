@@ -19,7 +19,7 @@ builder.Services.AddDbContext<PilotTradeDbContext>(o =>
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IIdGenerator, GuidIdGenerator>();
 builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
-    ? new DpapiSecretStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PilotTrade", "secrets"))
+    ? new WindowsCredentialManagerSecretStore()
     : new InMemorySecretStore());
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
 builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
@@ -49,7 +49,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PilotTradeDbContext>();
-    db.Database.EnsureCreated();
+    db.Database.Migrate();
 }
 
 app.UseCors();
@@ -88,6 +88,41 @@ app.MapPost("/api/market/snapshot", async (MarketSnapshotRequest req, IMarketDat
         return Results.Ok(bundle);
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+// Test Demo connection (read-only, no trades)
+app.MapPost("/api/demo/test-connection", async (ISecretStore secrets, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
+{
+    var apiKey = await secrets.GetAsync("capital:Demo:api_key", ct);
+    var identifier = await secrets.GetAsync("capital:Demo:identifier", ct);
+    var password = await secrets.GetAsync("capital:Demo:password", ct);
+    if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(identifier) || string.IsNullOrWhiteSpace(password))
+        return Results.BadRequest(new { error = "Demo credentials not configured in Windows Credential Manager (CapitalTrading/Demo/*)" });
+
+    var config = new BrokerEnvironmentConfig(TradingEnvironment.Demo, "https://demo-api-capital.backend-capital.com", null, false);
+    var httpFactory = app.Services.GetRequiredService<IHttpClientFactory>();
+    var broker = new CapitalComBrokerAdapter(config, secrets, httpFactory, clock, ids);
+    try
+    {
+        var session = await broker.CreateSessionAsync(ct);
+        var account = await broker.GetAccountAsync(session.AccountId == "" ? "demo" : session.AccountId, ct);
+        await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "TestConnection", "owner", "demo", account.AccountId, null, null, "{\"status\":\"ok\"}", true), ct);
+        return Results.Ok(new
+        {
+            status = "ok",
+            environment = "demo",
+            accountId = account.AccountId,
+            currency = account.Currency,
+            balance = account.Balance,
+            equity = account.Equity,
+            freeMargin = account.FreeMargin,
+            sessionId = session.SessionId
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 // Risk preview endpoint (placeholder)
