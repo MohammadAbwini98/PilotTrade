@@ -19,8 +19,22 @@ builder.Services.AddDbContext<PilotTradeDbContext>(o =>
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IIdGenerator, GuidIdGenerator>();
 builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
-    ? new WindowsCredentialManagerSecretStore(allowProtectedMutations: true)
+    ? new WindowsCredentialManagerSecretStore(allowProtectedMutations: false)
     : new InMemorySecretStore());
+// Privileged credential management (explicit owner-authorized only)
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddSingleton<IOwnerAuthorizationService>(sp => new OwnerAuthorizationService(sp.GetRequiredService<ISecretStore>()));
+    builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
+        new PrivilegedCredentialManager(new WindowsCredentialManagerSecretStore(allowProtectedMutations: true), sp.GetRequiredService<IOwnerAuthorizationService>()));
+}
+else
+{
+    builder.Services.AddSingleton<IOwnerAuthorizationService>(sp => new OwnerAuthorizationService(sp.GetRequiredService<ISecretStore>()));
+    builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
+        new PrivilegedCredentialManager(new InMemorySecretStore(), sp.GetRequiredService<IOwnerAuthorizationService>()));
+}
+builder.Services.AddSingleton<ICsrfTokenService, InMemoryCsrfTokenService>();
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
 builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
 var envStr = builder.Configuration["TRADING_ENVIRONMENT"] ?? "demo";
@@ -50,6 +64,13 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PilotTradeDbContext>();
     db.Database.Migrate();
+}
+
+// Ensure owner token exists (printed once to console on first run)
+using (var scope = app.Services.CreateScope())
+{
+    var auth = scope.ServiceProvider.GetRequiredService<IOwnerAuthorizationService>();
+    _ = auth.EnsureOwnerTokenAsync(CancellationToken.None).GetAwaiter().GetResult();
 }
 
 app.UseCors();
@@ -134,26 +155,41 @@ app.MapGet("/api/demo/credential-status", async (ISecretStore secrets, Cancellat
     return Results.Ok(new
     {
         apiKeyPresent = !string.IsNullOrWhiteSpace(key),
-        apiKeyLength = key?.Length ?? 0,
         identifierPresent = !string.IsNullOrWhiteSpace(id),
-        identifierLength = id?.Length ?? 0,
-        passwordPresent = !string.IsNullOrWhiteSpace(pw),
-        passwordLength = pw?.Length ?? 0
+        passwordPresent = !string.IsNullOrWhiteSpace(pw)
     });
 });
 
-app.MapPost("/api/demo/configure-credentials", async (CredentialSetupRequest req, ISecretStore secrets, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
+app.MapGet("/api/security/csrf-token", (ICsrfTokenService csrf) => Results.Ok(new { csrfToken = csrf.IssueToken() }));
+
+app.MapPost("/api/demo/configure-credentials", async (HttpContext http, CredentialSetupRequest req, IPrivilegedCredentialManager mgr, IOwnerAuthorizationService auth, ICsrfTokenService csrf, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
 {
+    // Loopback only
+    if (http.Connection.RemoteIpAddress is null || !System.Net.IPAddress.IsLoopback(http.Connection.RemoteIpAddress))
+        return Results.StatusCode(403);
+
+    var ownerToken = http.Request.Headers["X-PilotTrade-Owner-Token"].ToString();
+    var csrfToken = http.Request.Headers["X-PilotTrade-CSRF"].ToString();
+    var origin = http.Request.Headers["Origin"].ToString();
+    if (string.IsNullOrWhiteSpace(origin)) origin = http.Request.Headers["Referer"].ToString();
+    if (!origin.Contains("localhost") && !origin.Contains("127.0.0.1"))
+        return Results.StatusCode(403);
+    if (!csrf.Validate(csrfToken))
+        return Results.StatusCode(403);
+    if (!await auth.AuthorizeAsync(ownerToken, csrfToken, ct))
+        return Results.StatusCode(403);
+
     if (string.IsNullOrWhiteSpace(req.ApiKey) || string.IsNullOrWhiteSpace(req.ApiPassword) || string.IsNullOrWhiteSpace(req.Identifier))
         return Results.BadRequest(new { error = "All fields required" });
 
-    var existing = await secrets.GetAsync("capital:Demo:api_key", ct);
-    if (!string.IsNullOrWhiteSpace(existing) && !req.Replace)
-        return Results.Conflict(new { error = "Credentials already configured. Set replace=true to overwrite." });
-
-    await secrets.SetAsync("capital:Demo:api_key", req.ApiKey, ct);
-    await secrets.SetAsync("capital:Demo:password", req.ApiPassword, ct);
-    await secrets.SetAsync("capital:Demo:identifier", req.Identifier, ct);
+    try
+    {
+        await mgr.ConfigureDemoCredentialsAsync(req.ApiKey, req.ApiPassword, req.Identifier, req.Replace, ct);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { error = ex.Message });
+    }
     await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "ConfigureCredentials", "owner", "demo", null, null, null, "{\"status\":\"configured\"}", true), ct);
     return Results.Ok(new { status = "configured" });
 });
@@ -164,6 +200,8 @@ app.Run();
 
 public record MarketSnapshotRequest(string AccountId, TradingEnvironment Environment, string Epic, int SelectionVersion, string[]? Timeframes);
 public record CredentialSetupRequest(string ApiKey, string ApiPassword, string Identifier, bool Replace = false);
+
+public partial class Program { }
 
 public class DefaultTradingControl : ITradingControl
 {
