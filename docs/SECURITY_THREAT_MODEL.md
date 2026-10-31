@@ -14,4 +14,4 @@
 | Duplicate orders | Durable journal; no automatic resubmission after an uncertain outcome; reconciliation; durable kill switch |
 | Secrets in a release | `scripts/secret-scan.ps1` checks tracked files and publish output in CI. It catches known shapes only |
 
-Known limits: any process that can run as the same OS user can read the owner token through `--show-owner-token`, and older commits contain build logs (no secrets found in them by this scan, which covers current files only).
+Known limits: any process that can run as the same OS user can read the owner token through `--show-owner-token`, and older commits contain build logs. `scripts/secret-scan.ps1` covers current files only; a separate pattern search of all commits on 2026-10-31 found no known credential shapes, which does not prove the history is clean.

@@ -49,7 +49,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 1. The authenticated evidence run needs owner approval.
 2. A push is needed for macOS and CI verification.
 3. Before the execution phase: Capital.com documents no margin-used or realized-P&L field, so the risk engine rejects all Capital orders. Solving this needs a proven data source or an owner-approved policy decision.
-4. Build logs remain in 5 older commits of the public repository. History was not rewritten.
+4. Build logs remain in 5 older commits of the public repository. History was not rewritten. A pattern search of all commits found no known credential shapes, but it cannot prove the logs hold nothing private.
 
 ## GO/NO-GO
 
