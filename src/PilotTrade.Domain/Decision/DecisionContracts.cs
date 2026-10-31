@@ -26,7 +26,9 @@ public sealed record DecisionCoordinatorInput(
     ClaudeAnalysisResult? Claude,
     JevResult? Jev,
     string StrategyId,
-    string StrategyVersion);
+    string StrategyVersion,
+    // The selection in force now; null fails closed so an outdated decision cannot pass.
+    InstrumentSelection? CurrentSelection = null);
 
 public interface IDecisionCoordinator
 {

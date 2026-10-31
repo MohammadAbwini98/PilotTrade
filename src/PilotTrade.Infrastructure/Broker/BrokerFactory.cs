@@ -10,14 +10,20 @@ public sealed class BrokerAdapterFactory : IBrokerSessionFactory
     private readonly IHttpClientFactory _http;
     private readonly IClock _clock;
     private readonly IIdGenerator _ids;
+    private readonly BrokerRuntimeOptions _options;
 
-    public BrokerAdapterFactory(ISecretStore secrets, IHttpClientFactory http, IClock clock, IIdGenerator ids)
-    { _secrets = secrets; _http = http; _clock = clock; _ids = ids; }
+    public BrokerAdapterFactory(ISecretStore secrets, IHttpClientFactory http, IClock clock, IIdGenerator ids, BrokerRuntimeOptions options)
+    { _secrets = secrets; _http = http; _clock = clock; _ids = ids; _options = options; }
 
     public IBrokerAdapter Create(TradingEnvironment environment)
     {
-        // Default to simulator unless explicitly configured with real base URL secret? 
-        // For safety, real adapter requires config; factory returns simulator by default.
-        return new SimulatedBrokerAdapter(environment, _clock, _ids);
+        if (environment != TradingEnvironment.Demo) throw new InvalidOperationException("Live trading is locked.");
+        return _options.Mode == BrokerMode.CapitalDemo
+            ? CreateCapitalDemo(_options.AccountId)
+            : new SimulatedBrokerAdapter(environment, _clock, _ids);
     }
+
+    public CapitalComBrokerAdapter CreateCapitalDemo(string? accountId) => new(
+        new BrokerEnvironmentConfig(TradingEnvironment.Demo, BrokerRuntimeOptions.CapitalDemoBaseUri, accountId, false),
+        _secrets, _http, _clock, _ids);
 }

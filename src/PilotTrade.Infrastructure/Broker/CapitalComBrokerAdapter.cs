@@ -1,311 +1,459 @@
 namespace PilotTrade.Infrastructure.Broker;
 
-using System.Net.Http.Headers;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using PilotTrade.Domain;
 using PilotTrade.Domain.Broker;
 using PilotTrade.Domain.Security;
 
-// NOTE: Endpoint paths/fields must be verified against official Capital.com docs before production use.
-// See docs/API_VERIFICATION.md. This adapter is intentionally conservative and fail-closed.
+// Read-only Capital.com Demo adapter. Contract: https://open-api.capital.com/ (see docs/BROKER_CONTRACT_MATRIX.md).
+// Failures raise BrokerException, so a broker failure can never look like an empty account.
+// Order submission, cancel and close are disabled in this phase and make no network call.
 public sealed class CapitalComBrokerAdapter : IBrokerAdapter
 {
+    private const int MaxAttempts = 3;
+    private static readonly TimeSpan GeneralInterval = TimeSpan.FromMilliseconds(100); // 10 requests/s
+    private static readonly TimeSpan SessionInterval = TimeSpan.FromSeconds(1); // POST /session: 1 request/s
+    private static readonly TimeSpan SessionLifetime = TimeSpan.FromMinutes(10); // expires after 10 minutes idle
+    private static readonly IReadOnlyDictionary<string, (string Resolution, TimeSpan Span)> Timeframes = new Dictionary<string, (string, TimeSpan)>
+    {
+        ["1m"] = ("MINUTE", TimeSpan.FromMinutes(1)),
+        ["5m"] = ("MINUTE_5", TimeSpan.FromMinutes(5)),
+        ["15m"] = ("MINUTE_15", TimeSpan.FromMinutes(15)),
+        ["30m"] = ("MINUTE_30", TimeSpan.FromMinutes(30)),
+        ["1h"] = ("HOUR", TimeSpan.FromHours(1)),
+        ["4h"] = ("HOUR_4", TimeSpan.FromHours(4)),
+        ["1d"] = ("DAY", TimeSpan.FromDays(1)),
+        ["1w"] = ("WEEK", TimeSpan.FromDays(7)),
+    };
+
     private readonly BrokerEnvironmentConfig _config;
     private readonly ISecretStore _secrets;
     private readonly IHttpClientFactory? _httpFactory;
     private readonly HttpClient? _httpClient;
     private readonly IClock _clock;
     private readonly IIdGenerator _ids;
-    private BrokerSession? _session;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
-    private readonly SemaphoreSlim _rateLimiter = new(10, 10);
-    private DateTimeOffset _lastRequestUtc = DateTimeOffset.MinValue;
+    private readonly SemaphoreSlim _accountLock = new(1, 1); // the active account is per session, so switch + read is one unit
+    private readonly RateGate _generalGate;
+    private readonly RateGate _sessionGate;
+    private BrokerSession? _session;
+    private long _sessionGeneration;
 
-    public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory httpFactory, IClock clock, IIdGenerator ids)
-    {
-        _config = config; _secrets = secrets; _httpFactory = httpFactory; _clock = clock; _ids = ids;
-    }
+    public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory httpFactory, IClock clock, IIdGenerator ids, Func<TimeSpan, CancellationToken, Task>? delay = null)
+        : this(config, secrets, httpFactory, null, clock, ids, delay) { }
 
-    public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, HttpClient httpClient, IClock clock, IIdGenerator ids)
-    {
-        _config = config; _secrets = secrets; _httpClient = httpClient; _clock = clock; _ids = ids;
-    }
+    public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, HttpClient httpClient, IClock clock, IIdGenerator ids, Func<TimeSpan, CancellationToken, Task>? delay = null)
+        : this(config, secrets, null, httpClient, clock, ids, delay) { }
 
-    private HttpClient CreateHttp()
+    private CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory? httpFactory, HttpClient? httpClient, IClock clock, IIdGenerator ids, Func<TimeSpan, CancellationToken, Task>? delay)
     {
-        if (_httpClient is not null)
-        {
-            if (_httpClient.BaseAddress is null) _httpClient.BaseAddress = new Uri(_config.ApiBaseUri);
-            return _httpClient;
-        }
-        var http = _httpFactory!.CreateClient("capital");
-        http.BaseAddress = new Uri(_config.ApiBaseUri);
-        return http;
+        if (config.Environment != TradingEnvironment.Demo || config.LiveExecutionEnabled)
+            throw new InvalidOperationException("Capital.com Live is locked.");
+        if (!string.Equals(config.ApiBaseUri.TrimEnd('/'), BrokerRuntimeOptions.CapitalDemoBaseUri, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The Capital.com adapter only accepts the Demo API host.");
+        _config = config; _secrets = secrets; _httpFactory = httpFactory; _httpClient = httpClient; _clock = clock; _ids = ids;
+        _delay = delay ?? Task.Delay;
+        _generalGate = new RateGate(GeneralInterval, clock, _delay);
+        _sessionGate = new RateGate(SessionInterval, clock, _delay);
     }
 
     public TradingEnvironment Environment => _config.Environment;
+    public bool ExecutionEnabled => false;
 
-    private async Task ThrottleAsync(CancellationToken ct)
+    private HttpClient Http() => _httpClient ?? _httpFactory!.CreateClient("capital");
+    private Uri Url(string pathAndQuery) => new(new Uri(_config.ApiBaseUri), pathAndQuery);
+
+    private sealed class RateGate
     {
-        await _rateLimiter.WaitAsync(ct);
-        try
+        private readonly TimeSpan _interval;
+        private readonly IClock _clock;
+        private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+        private readonly object _lock = new();
+        private DateTimeOffset _next = DateTimeOffset.MinValue;
+
+        public RateGate(TimeSpan interval, IClock clock, Func<TimeSpan, CancellationToken, Task> delay) { _interval = interval; _clock = clock; _delay = delay; }
+
+        public Task WaitAsync(CancellationToken ct)
         {
-            var now = _clock.UtcNow;
-            var elapsed = now - _lastRequestUtc;
-            if (elapsed < TimeSpan.FromMilliseconds(100))
-                await Task.Delay(TimeSpan.FromMilliseconds(100) - elapsed, ct);
-            _lastRequestUtc = _clock.UtcNow;
+            TimeSpan wait;
+            lock (_lock)
+            {
+                var now = _clock.UtcNow;
+                var slot = _next > now ? _next : now;
+                _next = slot + _interval;
+                wait = slot - now;
+            }
+            return wait > TimeSpan.Zero ? _delay(wait, ct) : Task.CompletedTask;
         }
-        finally { _rateLimiter.Release(); }
+    }
+
+    private static TimeSpan Backoff(int attempt, HttpResponseMessage? resp = null)
+    {
+        if (resp?.Headers.RetryAfter?.Delta is { } d && d > TimeSpan.Zero) return d;
+        return TimeSpan.FromSeconds(1 << attempt);
     }
 
     private async Task<BrokerSession> EnsureSessionAsync(CancellationToken ct)
     {
-        if (_session is not null && _session.ExpiresUtc > _clock.UtcNow.AddMinutes(1)) return _session;
+        var current = _session;
+        if (current is not null && current.ExpiresUtc > _clock.UtcNow.AddMinutes(1)) return current;
         await _sessionLock.WaitAsync(ct);
         try
         {
-            if (_session is not null && _session.ExpiresUtc > _clock.UtcNow.AddMinutes(1)) return _session;
-            var apiKey = await _secrets.GetAsync($"capital:{_config.Environment}:api_key", ct) ?? throw new InvalidOperationException("Missing API key");
-            var identifier = await _secrets.GetAsync($"capital:{_config.Environment}:identifier", ct) ?? throw new InvalidOperationException("Missing identifier");
-            var password = await _secrets.GetAsync($"capital:{_config.Environment}:password", ct) ?? throw new InvalidOperationException("Missing password");
-            Exception? last = null;
-            for (int attempt = 0; attempt < 5; attempt++)
+            current = _session;
+            if (current is not null && current.ExpiresUtc > _clock.UtcNow.AddMinutes(1)) return current;
+
+            var apiKey = await RequireSecretAsync("api_key", ct);
+            var identifier = await RequireSecretAsync("identifier", ct);
+            var password = await RequireSecretAsync("password", ct);
+            var body = JsonSerializer.Serialize(new { identifier, password, encryptedPassword = false });
+
+            for (var attempt = 0; ; attempt++)
             {
-                try
+                await _sessionGate.WaitAsync(ct);
+                using var req = new HttpRequestMessage(HttpMethod.Post, Url("/api/v1/session"));
+                req.Headers.TryAddWithoutValidation("X-CAP-API-KEY", apiKey);
+                req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage resp;
+                try { resp = await Http().SendAsync(req, ct); }
+                catch (Exception ex) when (IsTransient(ex, ct))
                 {
-                    await ThrottleAsync(ct);
-                    var http = CreateHttp();
-                    var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/session");
-                    req.Headers.Add("X-CAP-API-KEY", apiKey);
-                    var body = JsonSerializer.Serialize(new { identifier, password, encryptedPassword = false });
-                    req.Content = new StringContent(body, Encoding.UTF8, "application/json");
-                    var resp = await http.SendAsync(req, ct);
-                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500)
+                    if (attempt + 1 >= MaxAttempts) throw new BrokerException(BrokerErrorKind.Unavailable, "Broker session request failed");
+                    await _delay(Backoff(attempt), ct);
+                    continue;
+                }
+                using (resp)
+                {
+                    if (resp.StatusCode == HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500)
                     {
-                        last = new InvalidOperationException($"Capital.com session HTTP {(int)resp.StatusCode}");
-                        var delay = TimeSpan.FromSeconds(1.1);
-                        if (resp.Headers.RetryAfter?.Delta is TimeSpan d) delay = d + TimeSpan.FromMilliseconds(100);
-                        await Task.Delay(delay, ct);
+                        if (attempt + 1 >= MaxAttempts) throw TerminalError(resp.StatusCode);
+                        await _delay(Backoff(attempt, resp), ct);
                         continue;
                     }
                     if (!resp.IsSuccessStatusCode)
-                    {
-                        var errBody = await resp.Content.ReadAsStringAsync(ct);
-                        throw new InvalidOperationException($"Capital.com session failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {errBody}");
-                    }
-                    var cst = resp.Headers.GetValues("CST").FirstOrDefault() ?? throw new InvalidOperationException("Missing CST");
-                    var sec = resp.Headers.GetValues("X-SECURITY-TOKEN").FirstOrDefault() ?? throw new InvalidOperationException("Missing X-SECURITY-TOKEN");
-                    _session = new BrokerSession(_ids.NewId("sess"), cst, sec, _clock.UtcNow.AddMinutes(10), _config.Environment, _config.AccountId ?? "");
-                    return _session;
+                        throw new BrokerException(BrokerErrorKind.Authentication, $"Broker refused the session (HTTP {(int)resp.StatusCode})");
+
+                    var cst = Header(resp, "CST");
+                    var security = Header(resp, "X-SECURITY-TOKEN");
+                    using var doc = CapitalComJson.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    var activeAccount = CapitalComJson.Str(doc.RootElement, "currentAccountId");
+                    var session = new BrokerSession(_ids.NewId("sess"), cst, security, _clock.UtcNow + SessionLifetime, _config.Environment, activeAccount);
+                    Interlocked.Increment(ref _sessionGeneration);
+                    _session = session;
+                    return session;
                 }
-                catch (Exception ex) { last = ex; await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)), ct); }
             }
-            throw last ?? new InvalidOperationException("Session creation failed");
         }
         finally { _sessionLock.Release(); }
     }
 
-    private HttpClient ClientWithSession(BrokerSession s)
+    private async Task<string> RequireSecretAsync(string name, CancellationToken ct)
     {
-        var http = CreateHttp();
-        http.DefaultRequestHeaders.Add("CST", s.CstToken);
-        http.DefaultRequestHeaders.Add("X-SECURITY-TOKEN", s.SecurityToken);
-        return http;
+        var value = await _secrets.GetAsync($"capital:{_config.Environment}:{name}", ct);
+        return string.IsNullOrWhiteSpace(value)
+            ? throw new BrokerException(BrokerErrorKind.CredentialsMissing, "Capital.com Demo credentials are not configured")
+            : value;
+    }
+
+    private static string Header(HttpResponseMessage resp, string name) =>
+        resp.Headers.TryGetValues(name, out var values) && values.FirstOrDefault() is { Length: > 0 } v ? v : throw CapitalComJson.Malformed($"{name} header");
+
+    private static bool IsTransient(Exception ex, CancellationToken ct) =>
+        !ct.IsCancellationRequested && ex is HttpRequestException or TaskCanceledException;
+
+    private static BrokerException TerminalError(HttpStatusCode status) => status switch
+    {
+        HttpStatusCode.TooManyRequests => new BrokerException(BrokerErrorKind.RateLimited, "Broker rate limit reached"),
+        HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new BrokerException(BrokerErrorKind.Authentication, "Broker rejected the session"),
+        HttpStatusCode.NotFound => new BrokerException(BrokerErrorKind.NotFound, "Broker resource not found"),
+        >= HttpStatusCode.InternalServerError => new BrokerException(BrokerErrorKind.Unavailable, $"Broker unavailable (HTTP {(int)status})"),
+        _ => new BrokerException(BrokerErrorKind.InvalidRequest, $"Broker refused the request (HTTP {(int)status})")
+    };
+
+    // Only GET and PUT /session come through here, and both are safe to repeat. Order submission never does.
+    private async Task<string> SendAsync(HttpMethod method, string pathAndQuery, string? jsonBody, CancellationToken ct)
+    {
+        var reauthenticated = false;
+        for (var attempt = 0; ; attempt++)
+        {
+            var session = await EnsureSessionAsync(ct);
+            await _generalGate.WaitAsync(ct);
+            using var req = new HttpRequestMessage(method, Url(pathAndQuery));
+            req.Headers.TryAddWithoutValidation("CST", session.CstToken);
+            req.Headers.TryAddWithoutValidation("X-SECURITY-TOKEN", session.SecurityToken);
+            if (jsonBody is not null) req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage resp;
+            try { resp = await Http().SendAsync(req, ct); }
+            catch (Exception ex) when (IsTransient(ex, ct))
+            {
+                if (attempt + 1 >= MaxAttempts) throw new BrokerException(BrokerErrorKind.Unavailable, "Broker request failed");
+                await _delay(Backoff(attempt), ct);
+                continue;
+            }
+            using (resp)
+            {
+                if (resp.IsSuccessStatusCode)
+                {
+                    _session = session with { ExpiresUtc = _clock.UtcNow + SessionLifetime };
+                    return await resp.Content.ReadAsStringAsync(ct);
+                }
+                if (resp.StatusCode == HttpStatusCode.Unauthorized && !reauthenticated)
+                {
+                    reauthenticated = true;
+                    _session = null;
+                    attempt--;
+                    continue;
+                }
+                if ((resp.StatusCode == HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500) && attempt + 1 < MaxAttempts)
+                {
+                    await _delay(Backoff(attempt, resp), ct);
+                    continue;
+                }
+                throw TerminalError(resp.StatusCode);
+            }
+        }
+    }
+
+    private async Task<string> GetAsync(string pathAndQuery, CancellationToken ct) => await SendAsync(HttpMethod.Get, pathAndQuery, null, ct);
+
+    // Runs a read against the requested account after proving, through GET /session, that it is the active one.
+    // A re-login during the read lands back on the default account, so that read is discarded and repeated.
+    private async Task<T> WithAccountAsync<T>(string accountId, Func<Task<T>> read, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(accountId)) throw new BrokerException(BrokerErrorKind.AccountNotFound, "Account is required");
+        await _accountLock.WaitAsync(ct);
+        try
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await ActivateAccountAsync(accountId, ct);
+                var generation = Interlocked.Read(ref _sessionGeneration);
+                var result = await read();
+                if (Interlocked.Read(ref _sessionGeneration) == generation) return result;
+            }
+            throw new BrokerException(BrokerErrorKind.AccountMismatch, "Broker session changed during the request");
+        }
+        finally { _accountLock.Release(); }
+    }
+
+    private async Task ActivateAccountAsync(string accountId, CancellationToken ct)
+    {
+        if (await ReadActiveAccountAsync(ct) == accountId) return;
+        try
+        {
+            await SendAsync(HttpMethod.Put, "/api/v1/session", JsonSerializer.Serialize(new { accountId }), ct);
+        }
+        catch (BrokerException ex) when (ex.Kind is BrokerErrorKind.InvalidRequest or BrokerErrorKind.NotFound)
+        {
+            throw new BrokerException(BrokerErrorKind.AccountNotFound, "Broker refused the requested account");
+        }
+        if (await ReadActiveAccountAsync(ct) != accountId)
+            throw new BrokerException(BrokerErrorKind.AccountMismatch, "Broker session is not on the requested account");
+    }
+
+    private async Task<string> ReadActiveAccountAsync(CancellationToken ct)
+    {
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/session", ct));
+        return CapitalComJson.Str(doc.RootElement, "accountId");
     }
 
     public async Task<BrokerSession> CreateSessionAsync(CancellationToken ct) => await EnsureSessionAsync(ct);
 
-    public async Task<BrokerAccount> GetAccountAsync(string accountId, CancellationToken ct)
+    public async Task<IReadOnlyList<BrokerAccountSummary>> GetAccountsAsync(CancellationToken ct)
     {
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resp = await http.GetAsync($"/api/v1/accounts", ct);
-        resp.EnsureSuccessStatusCode();
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
-        decimal balance = 0, equity = 0, free = 0, margin = 0, unreal = 0;
-        string currency = "USD";
-        string resolvedAccountId = accountId;
-        if (doc.RootElement.TryGetProperty("accounts", out var accs) && accs.ValueKind == JsonValueKind.Array && accs.GetArrayLength() > 0)
-        {
-            var a = accs[0];
-            if (a.TryGetProperty("accountId", out var aid) && aid.ValueKind == JsonValueKind.String) resolvedAccountId = aid.GetString() ?? resolvedAccountId;
-            if (a.TryGetProperty("currency", out var c) && c.ValueKind == JsonValueKind.String) currency = c.GetString() ?? currency;
-            if (a.TryGetProperty("balance", out var bal) && bal.ValueKind == JsonValueKind.Object)
-            {
-                if (bal.TryGetProperty("balance", out var b) && b.ValueKind == JsonValueKind.Number) balance = b.GetDecimal();
-                if (bal.TryGetProperty("profitLoss", out var pl) && pl.ValueKind == JsonValueKind.Number) unreal = pl.GetDecimal();
-                if (bal.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.Number) free = av.GetDecimal();
-            }
-            else if (a.TryGetProperty("balance", out var b2) && b2.ValueKind == JsonValueKind.Number) balance = b2.GetDecimal();
-            if (a.TryGetProperty("equity", out var e) && e.ValueKind == JsonValueKind.Number) equity = e.GetDecimal();
-            if (equity == 0) equity = balance + unreal;
-            if (free == 0 && a.TryGetProperty("available", out var av2) && av2.ValueKind == JsonValueKind.Number) free = av2.GetDecimal();
-        }
-        return new BrokerAccount(resolvedAccountId, _config.Environment, currency, balance, equity == 0 ? balance : equity, free, margin, unreal, 0m, _clock.UtcNow);
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/accounts", ct));
+        return CapitalComJson.Arr(doc.RootElement, "accounts").EnumerateArray()
+            .Select(a => new BrokerAccountSummary(
+                CapitalComJson.Str(a, "accountId"), CapitalComJson.OptStr(a, "accountName"), CapitalComJson.OptStr(a, "status"),
+                CapitalComJson.OptStr(a, "currency"), CapitalComJson.Bool(a, "preferred")))
+            .ToList();
     }
 
-    public async Task<IReadOnlyList<InstrumentMetadata>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct)
+    public async Task<BrokerAccount> GetAccountAsync(string accountId, CancellationToken ct) => await WithAccountAsync(accountId, async () =>
     {
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resp = await http.GetAsync($"/api/v1/markets?searchTerm={Uri.EscapeDataString(query ?? "")}", ct);
-        resp.EnsureSuccessStatusCode();
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        var list = new List<InstrumentMetadata>();
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.TryGetProperty("markets", out var markets))
-        {
-            foreach (var m in markets.EnumerateArray())
-            {
-                var epic = m.TryGetProperty("epic", out var e) ? e.GetString() ?? "" : "";
-                var name = m.TryGetProperty("instrumentName", out var n) ? n.GetString() ?? epic : epic;
-                list.Add(new InstrumentMetadata(epic, name, epic, InstrumentAssetClass.Unknown, MarketStatus.Unknown,
-                    m.TryGetProperty("bid", out _) ? "USD" : "USD", null, 2, 0.01m, 0.01m, 1000m, 0.01m, null, null, null, null, true, true, true, Array.Empty<string>(), _clock.UtcNow, _config.AccountId ?? "", _config.Environment));
-                if (limit > 0 && list.Count >= limit) break;
-            }
-        }
-        return list;
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/accounts", ct));
+        var matches = CapitalComJson.Arr(doc.RootElement, "accounts").EnumerateArray()
+            .Where(a => CapitalComJson.Str(a, "accountId") == accountId).ToList();
+        if (matches.Count == 0) throw new BrokerException(BrokerErrorKind.AccountNotFound, "Requested account not found");
+        if (matches.Count > 1) throw CapitalComJson.Malformed("duplicate accountId");
+
+        var account = matches[0];
+        var money = CapitalComJson.Obj(account, "balance");
+        var balance = CapitalComJson.Dec(money, "balance");
+        var deposit = CapitalComJson.Dec(money, "deposit");
+        var profitLoss = CapitalComJson.Dec(money, "profitLoss");
+        var available = CapitalComJson.Dec(money, "available");
+
+        // The API has no equity field. Balance only counts as equity when the response itself shows it already
+        // includes open P/L (balance = deposit + profitLoss); otherwise equity stays null and risk fails closed.
+        // Margin used and realized P/L are not documented at all and are never estimated.
+        decimal? equity = Math.Abs(balance - (deposit + profitLoss)) <= 0.01m ? balance : null;
+
+        return new BrokerAccount(accountId, _config.Environment, CapitalComJson.Str(account, "currency"), balance, equity, available,
+            null, profitLoss, null, _clock.UtcNow, equity is not null);
+    }, ct);
+
+    public async Task<IReadOnlyList<InstrumentSummary>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return Array.Empty<InstrumentSummary>();
+        using var doc = CapitalComJson.Parse(await GetAsync($"/api/v1/markets?searchTerm={Uri.EscapeDataString(query)}", ct));
+        var results = CapitalComJson.Arr(doc.RootElement, "markets").EnumerateArray()
+            .Select(m => new InstrumentSummary(
+                CapitalComJson.Str(m, "epic"), CapitalComJson.Str(m, "instrumentName"), CapitalComJson.OptStr(m, "symbol"),
+                CapitalComJson.AssetClass(CapitalComJson.OptStr(m, "instrumentType")), CapitalComJson.Status(m),
+                CapitalComJson.OptDec(m, "bid"), CapitalComJson.OptDec(m, "offer")));
+        return (limit > 0 ? results.Take(limit) : results).ToList();
     }
 
-    public async Task<InstrumentMetadata?> GetInstrumentAsync(string epic, string accountId, CancellationToken ct)
+    public async Task<InstrumentMetadata?> GetInstrumentAsync(string epic, string accountId, CancellationToken ct) => await WithAccountAsync(accountId, async () =>
     {
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resp = await http.GetAsync($"/api/v1/markets/{Uri.EscapeDataString(epic)}", ct);
-        if (!resp.IsSuccessStatusCode) return null;
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
+        string json;
+        try { json = await GetAsync($"/api/v1/markets/{Uri.EscapeDataString(epic)}", ct); }
+        catch (BrokerException ex) when (ex.Kind == BrokerErrorKind.NotFound) { return null; }
+
+        using var doc = CapitalComJson.Parse(json);
         var root = doc.RootElement;
-        var name = root.TryGetProperty("instrumentName", out var n) ? n.GetString() ?? epic : epic;
-        return new InstrumentMetadata(epic, name, epic, InstrumentAssetClass.Unknown, MarketStatus.Unknown, "USD", null, 2, 0.01m, 0.01m, 1000m, 0.01m, null, null, null, null, true, true, true, Array.Empty<string>(), _clock.UtcNow, accountId, _config.Environment);
+        var instrument = CapitalComJson.Obj(root, "instrument");
+        var rules = CapitalComJson.Obj(root, "dealingRules");
+        var snapshot = CapitalComJson.Obj(root, "snapshot");
+
+        if (CapitalComJson.Str(instrument, "epic") != epic) throw CapitalComJson.Malformed("instrument.epic");
+        var minSize = CapitalComJson.Rule(rules, "minDealSize").Value;
+        var maxSize = CapitalComJson.Rule(rules, "maxDealSize").Value;
+        if (maxSize < minSize) throw CapitalComJson.Malformed("maxDealSize");
+        var step = CapitalComJson.Rule(rules, "minSizeIncrement").Value;
+        var minStop = CapitalComJson.Rule(rules, "minStopOrProfitDistance");
+        var maxStop = CapitalComJson.Rule(rules, "maxStopOrProfitDistance");
+
+        var precisionValue = CapitalComJson.Dec(snapshot, "decimalPlacesFactor");
+        if (precisionValue < 0 || precisionValue > 12 || precisionValue != decimal.Truncate(precisionValue)) throw CapitalComJson.Malformed("decimalPlacesFactor");
+        var precision = (int)precisionValue;
+        var tick = 1m;
+        for (var i = 0; i < precision; i++) tick /= 10m;
+
+        var marginFactor = CapitalComJson.OptDec(instrument, "marginFactor");
+        decimal? leverage = marginFactor is > 0 && CapitalComJson.OptStr(instrument, "marginFactorUnit") == "PERCENTAGE" ? 100m / marginFactor : null;
+        var regular = snapshot.TryGetProperty("marketModes", out var modes) && modes.ValueKind == JsonValueKind.Array
+            && modes.EnumerateArray().Any(m => m.GetString() == "REGULAR");
+        var marketPreference = CapitalComJson.OptStr(rules, "marketOrderPreference");
+        var currency = CapitalComJson.Str(instrument, "currency");
+
+        return new InstrumentMetadata(
+            epic, CapitalComJson.Str(instrument, "name"), CapitalComJson.OptStr(instrument, "symbol") ?? epic,
+            CapitalComJson.AssetClass(CapitalComJson.OptStr(instrument, "type")), CapitalComJson.Status(snapshot),
+            currency, currency, precision, tick, minSize, maxSize, step, marginFactor, leverage, minStop.Value, maxStop.Value,
+            regular && marketPreference is not null && marketPreference.StartsWith("AVAILABLE", StringComparison.Ordinal),
+            regular, regular, ReadTradingHours(instrument), _clock.UtcNow, accountId, _config.Environment,
+            minStop.Unit, maxStop.Unit, CapitalComJson.Bool(instrument, "guaranteedStopAllowed"));
+    }, ct);
+
+    private static IReadOnlyList<string> ReadTradingHours(JsonElement instrument)
+    {
+        if (!instrument.TryGetProperty("openingHours", out var hours) || hours.ValueKind != JsonValueKind.Object) return Array.Empty<string>();
+        var zone = CapitalComJson.OptStr(hours, "zone");
+        var result = new List<string>();
+        foreach (var day in hours.EnumerateObject().Where(d => d.Value.ValueKind == JsonValueKind.Array))
+            foreach (var range in day.Value.EnumerateArray())
+                result.Add($"{day.Name} {range.GetString()} {zone}".TrimEnd());
+        return result;
+    }
+
+    public async Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IEnumerable<string> epics, CancellationToken ct)
+    {
+        var quotes = new List<MarketQuote>();
+        foreach (var batch in epics.Distinct().Chunk(50)) // GET /markets accepts at most 50 epics
+        {
+            var query = Uri.EscapeDataString(string.Join(",", batch));
+            using var doc = CapitalComJson.Parse(await GetAsync($"/api/v1/markets?epics={query}", ct));
+            foreach (var m in CapitalComJson.Arr(doc.RootElement, "markets").EnumerateArray())
+            {
+                var bid = CapitalComJson.Positive(m, "bid");
+                var offer = CapitalComJson.Positive(m, "offer");
+                if (offer < bid) throw CapitalComJson.Malformed("crossed quote");
+                var delayed = CapitalComJson.OptDec(m, "delayTime") is > 0;
+                quotes.Add(new MarketQuote(CapitalComJson.Str(m, "epic"), bid, offer, (bid + offer) / 2m, offer - bid,
+                    CapitalComJson.Utc(m, "updateTimeUTC"), _clock.UtcNow, delayed ? FeedHealth.Stale : FeedHealth.Healthy));
+            }
+        }
+        return quotes;
     }
 
     public async Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct)
     {
-        await ThrottleAsync(ct);
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resolution = timeframe switch { "1m" => "MINUTE", "5m" => "MINUTE_5", "15m" => "MINUTE_15", "1h" => "HOUR", "4h" => "HOUR_4", "1d" => "DAY", _ => "MINUTE_5" };
-        var resp = await http.GetAsync($"/api/v1/prices/{Uri.EscapeDataString(epic)}?resolution={resolution}&max={count}", ct);
-        if (!resp.IsSuccessStatusCode) return Array.Empty<Candle>();
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        var list = new List<Candle>();
-        try
+        if (!Timeframes.TryGetValue(timeframe, out var tf))
+            throw new BrokerException(BrokerErrorKind.InvalidRequest, "Unsupported timeframe");
+        var max = Math.Clamp(count, 1, 1000);
+        using var doc = CapitalComJson.Parse(await GetAsync($"/api/v1/prices/{Uri.EscapeDataString(epic)}?resolution={tf.Resolution}&max={max}", ct));
+        var now = _clock.UtcNow;
+        return CapitalComJson.Arr(doc.RootElement, "prices").EnumerateArray().Select(p =>
         {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("prices", out var prices))
-            {
-                foreach (var p in prices.EnumerateArray())
-                {
-                    var ot = p.TryGetProperty("snapshotTimeUTC", out var st) ? DateTimeOffset.Parse(st.GetString()!) : DateTimeOffset.UtcNow;
-                    list.Add(new Candle(epic, timeframe, ot, ot, true,
-                        p.TryGetProperty("openPrice", out var o) && o.TryGetProperty("bid", out var ob) && ob.ValueKind == JsonValueKind.Number ? ob.GetDecimal() : 0m,
-                        p.TryGetProperty("highPrice", out var h) && h.TryGetProperty("bid", out var hb) && hb.ValueKind == JsonValueKind.Number ? hb.GetDecimal() : 0m,
-                        p.TryGetProperty("lowPrice", out var l) && l.TryGetProperty("bid", out var lb) && lb.ValueKind == JsonValueKind.Number ? lb.GetDecimal() : 0m,
-                        p.TryGetProperty("closePrice", out var c) && c.TryGetProperty("bid", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetDecimal() : 0m,
-                        p.TryGetProperty("lastTradedVolume", out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null));
-                }
-            }
-        }
-        catch { /* malformed -> empty, fail closed */ }
-        return list;
+            var open = CapitalComJson.Utc(p, "snapshotTimeUTC");
+            var close = open + tf.Span;
+            return new Candle(epic, timeframe, open, close, close <= now,
+                Mid(p, "openPrice"), Mid(p, "highPrice"), Mid(p, "lowPrice"), Mid(p, "closePrice"), CapitalComJson.OptDec(p, "lastTradedVolume"));
+        }).ToList();
     }
 
-    public async Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct)
+    private static decimal Mid(JsonElement price, string name)
     {
-        await ThrottleAsync(ct);
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resp = await http.GetAsync("/api/v1/positions", ct);
-        if (!resp.IsSuccessStatusCode) return Array.Empty<Position>();
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        var list = new List<Position>();
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("positions", out var positions))
-            {
-                foreach (var p in positions.EnumerateArray())
-                {
-                    var epic = p.TryGetProperty("market", out var m) && m.TryGetProperty("epic", out var e) ? e.GetString() ?? "" : "";
-                    var dealId = p.TryGetProperty("position", out var pos) && pos.TryGetProperty("dealId", out var d) ? d.GetString() ?? "" : "";
-                    var direction = p.TryGetProperty("position", out var pos2) && pos2.TryGetProperty("direction", out var dir) && dir.GetString() == "SELL" ? OrderSide.Sell : OrderSide.Buy;
-                    var size = p.TryGetProperty("position", out var pos3) && pos3.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetDecimal() : 0m;
-                    list.Add(new Position(dealId, accountId, _config.Environment, epic, direction, size, null, null, null, null, null, _clock.UtcNow, _clock.UtcNow));
-                }
-            }
-        }
-        catch { }
-        return list;
+        var side = CapitalComJson.Obj(price, name);
+        return (CapitalComJson.Positive(side, "bid") + CapitalComJson.Positive(side, "ask")) / 2m;
     }
 
-    public Task<IReadOnlyList<WorkingOrder>> GetWorkingOrdersAsync(string accountId, CancellationToken ct)
-        => Task.FromResult<IReadOnlyList<WorkingOrder>>(Array.Empty<WorkingOrder>());
-
-    public async Task<BrokerSubmissionResult> SubmitOrderAsync(OrderIntent intent, CancellationToken ct)
+    public async Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct) => await WithAccountAsync<IReadOnlyList<Position>>(accountId, async () =>
     {
-        await ThrottleAsync(ct);
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var body = JsonSerializer.Serialize(new
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/positions", ct));
+        var now = _clock.UtcNow;
+        return CapitalComJson.Arr(doc.RootElement, "positions").EnumerateArray().Select(item =>
         {
-            epic = intent.Epic,
-            direction = intent.Side == OrderSide.Buy ? "BUY" : "SELL",
-            size = intent.Size,
-            guaranteedStop = false,
-            stopLevel = intent.StopLevel,
-            profitLevel = intent.TakeProfitLevel
-        });
-        var resp = await http.PostAsync("/api/v1/positions", new StringContent(body, Encoding.UTF8, "application/json"), ct);
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
+            var p = CapitalComJson.Obj(item, "position");
+            var m = CapitalComJson.Obj(item, "market");
+            var side = CapitalComJson.Side(p, "direction");
+            var bid = CapitalComJson.OptDec(m, "bid");
+            var offer = CapitalComJson.OptDec(m, "offer");
+            return new Position(CapitalComJson.Str(p, "dealId"), accountId, _config.Environment, CapitalComJson.Str(m, "epic"), side,
+                CapitalComJson.Positive(p, "size"), CapitalComJson.Positive(p, "level"), side == OrderSide.Buy ? bid : offer,
+                CapitalComJson.Dec(p, "upl"), CapitalComJson.OptDec(p, "stopLevel"), CapitalComJson.OptDec(p, "profitLevel"),
+                CapitalComJson.Utc(p, "createdDateUTC"), now);
+        }).ToList();
+    }, ct);
+
+    public async Task<IReadOnlyList<WorkingOrder>> GetWorkingOrdersAsync(string accountId, CancellationToken ct) => await WithAccountAsync<IReadOnlyList<WorkingOrder>>(accountId, async () =>
+    {
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/workingorders", ct));
+        var now = _clock.UtcNow;
+        return CapitalComJson.Arr(doc.RootElement, "workingOrders").EnumerateArray().Select(item =>
         {
-            return new BrokerSubmissionResult(intent.IntentId, null, null, OrderState.Rejected, $"HTTP {(int)resp.StatusCode}: {json}", _clock.UtcNow, null);
-        }
-        string? dealRef = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("dealReference", out var dr)) dealRef = dr.GetString();
-        }
-        catch { }
-        return new BrokerSubmissionResult(intent.IntentId, dealRef, null, OrderState.BrokerPending, null, _clock.UtcNow, null);
-    }
+            var o = CapitalComJson.Obj(item, "workingOrderData");
+            var type = CapitalComJson.Str(o, "orderType") switch
+            {
+                "LIMIT" => OrderType.Limit,
+                "STOP" => OrderType.Stop,
+                _ => throw CapitalComJson.Malformed("orderType")
+            };
+            return new WorkingOrder(CapitalComJson.Str(o, "dealId"), accountId, _config.Environment, CapitalComJson.Str(o, "epic"),
+                CapitalComJson.Side(o, "direction"), type, CapitalComJson.Positive(o, "orderSize"), CapitalComJson.Positive(o, "orderLevel"),
+                null, null, CapitalComJson.Utc(o, "createdDateUTC"), now, CapitalComJson.OptDec(o, "stopDistance"), CapitalComJson.OptDec(o, "profitDistance"));
+        }).ToList();
+    }, ct);
+
+    // Disabled in this phase: never opens a session and never sends a request.
+    public Task<BrokerSubmissionResult> SubmitOrderAsync(OrderIntent intent, CancellationToken ct) =>
+        Task.FromResult(new BrokerSubmissionResult(intent.IntentId, null, null, OrderState.Rejected, "Capital.com order execution is disabled", _clock.UtcNow, null));
 
     public async Task<BrokerSubmissionResult?> GetConfirmationAsync(string brokerDealReference, CancellationToken ct)
     {
-        await ThrottleAsync(ct);
-        var s = await EnsureSessionAsync(ct);
-        var http = ClientWithSession(s);
-        var resp = await http.GetAsync($"/api/v1/confirms/{Uri.EscapeDataString(brokerDealReference)}", ct);
-        if (!resp.IsSuccessStatusCode) return null;
-        var json = await resp.Content.ReadAsStringAsync(ct);
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var dealStatus = doc.RootElement.TryGetProperty("dealStatus", out var ds) ? ds.GetString() : null;
-            var state = dealStatus switch
-            {
-                "ACCEPTED" => OrderState.Confirmed,
-                "REJECTED" => OrderState.Rejected,
-                _ => OrderState.BrokerPending
-            };
-            string? dealId = null;
-            if (doc.RootElement.TryGetProperty("affectedDeals", out var ad) && ad.ValueKind == JsonValueKind.Array && ad.GetArrayLength() > 0)
-            {
-                dealId = ad[0].TryGetProperty("dealId", out var di) ? di.GetString() : null;
-            }
-            var reason = doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : null;
-            return new BrokerSubmissionResult("", brokerDealReference, dealId, state, reason, _clock.UtcNow, state == OrderState.Confirmed ? _clock.UtcNow : null);
-        }
-        catch { return null; }
+        string json;
+        try { json = await GetAsync($"/api/v1/confirms/{Uri.EscapeDataString(brokerDealReference)}", ct); }
+        catch (BrokerException ex) when (ex.Kind == BrokerErrorKind.NotFound) { return null; }
+        return CapitalComOrderContract.ParseConfirmation(json, brokerDealReference, _clock.UtcNow);
     }
 
     public Task<bool> CancelOrderAsync(string orderId, string accountId, CancellationToken ct) => Task.FromResult(false);
     public Task<bool> ClosePositionAsync(string positionId, decimal? size, CancellationToken ct) => Task.FromResult(false);
-    public Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IEnumerable<string> epics, CancellationToken ct)
-        => Task.FromResult<IReadOnlyList<MarketQuote>>(Array.Empty<MarketQuote>());
 }

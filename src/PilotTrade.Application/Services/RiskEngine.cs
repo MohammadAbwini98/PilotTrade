@@ -6,6 +6,9 @@ using PilotTrade.Domain.Risk;
 
 public sealed class RiskEngine : IRiskEngine
 {
+    private static decimal ToPriceDistance(decimal value, DistanceUnit unit, decimal price) =>
+        unit == DistanceUnit.Percentage ? value / 100m * price : value;
+
     public RiskEvaluationResult Evaluate(RiskEvaluationRequest request)
     {
         var reasons = new List<string>();
@@ -30,7 +33,7 @@ public sealed class RiskEngine : IRiskEngine
         if (policy.InstrumentAllowlist.Count > 0 && !policy.InstrumentAllowlist.Contains(intent.Epic, StringComparer.OrdinalIgnoreCase)) reasons.Add("Instrument not allowlisted");
 
         // Market status
-        if (inst.Status != MarketStatus.Open && inst.Status != MarketStatus.Unknown) reasons.Add($"Market not open: {inst.Status}");
+        if (inst.Status != MarketStatus.Open) reasons.Add($"Market not open: {inst.Status}");
 
         // Currency conversion
         if (!string.Equals(inst.QuoteCurrency, acct.Currency, StringComparison.OrdinalIgnoreCase))
@@ -50,27 +53,40 @@ public sealed class RiskEngine : IRiskEngine
 
         // Protective stop
         if (policy.RequireProtectiveStop && intent.StopLevel is null) reasons.Add("Protective stop required");
-        if (intent.StopLevel is not null && inst.MinStopDistance is not null)
+        if (intent.StopLevel is not null)
         {
             var entry = intent.Side == OrderSide.Buy ? quote.Ask : quote.Bid;
             var dist = Math.Abs(entry - intent.StopLevel.Value);
-            if (dist < inst.MinStopDistance.Value) reasons.Add("Stop distance below minimum");
-            if (inst.MaxStopDistance is not null && dist > inst.MaxStopDistance.Value) reasons.Add("Stop distance above maximum");
+            if (inst.MinStopDistance is null || inst.MaxStopDistance is null) reasons.Add("Stop rules missing");
+            else
+            {
+                if (dist < ToPriceDistance(inst.MinStopDistance.Value, inst.MinStopDistanceUnit, entry)) reasons.Add("Stop distance below minimum");
+                if (dist > ToPriceDistance(inst.MaxStopDistance.Value, inst.MaxStopDistanceUnit, entry)) reasons.Add("Stop distance above maximum");
+            }
         }
 
         // Per-trade risk
         if (preview.EstimatedRiskAccountCurrency > policy.MaxRiskPerTradeAccountCurrency)
             reasons.Add($"Per-trade risk {preview.EstimatedRiskAccountCurrency} > {policy.MaxRiskPerTradeAccountCurrency}");
-        var equity = acct.Equity == 0 ? acct.Balance : acct.Equity;
-        var pctRisk = equity > 0 ? preview.EstimatedRiskAccountCurrency / equity * 100m : 100m;
-        if (pctRisk > policy.MaxRiskPerTradePercentEquity) reasons.Add($"Per-trade risk pct {pctRisk:F2}% > {policy.MaxRiskPerTradePercentEquity}%");
+        if (acct.Equity is not > 0) reasons.Add("Equity unavailable");
+        else
+        {
+            var pctRisk = preview.EstimatedRiskAccountCurrency / acct.Equity.Value * 100m;
+            if (pctRisk > policy.MaxRiskPerTradePercentEquity) reasons.Add($"Per-trade risk pct {pctRisk:F2}% > {policy.MaxRiskPerTradePercentEquity}%");
+        }
 
         // Daily loss
         var unrealizedLoss = request.AllPositions.Sum(p => p.UnrealizedPnL.HasValue && p.UnrealizedPnL.Value < 0 ? -p.UnrealizedPnL.Value : 0m);
-        var totalLoss = Math.Abs(Math.Min(acct.RealizedPnLToday, 0m)) + unrealizedLoss;
-        if (totalLoss >= policy.MaxDailyLossAccountCurrency) reasons.Add($"Daily loss {totalLoss} >= {policy.MaxDailyLossAccountCurrency}");
+        if (request.AllPositions.Any(p => p.UnrealizedPnL is null)) reasons.Add("Position P/L missing");
+        if (acct.RealizedPnLToday is null) reasons.Add("Realized P/L unavailable");
+        else
+        {
+            var totalLoss = Math.Abs(Math.Min(acct.RealizedPnLToday.Value, 0m)) + unrealizedLoss;
+            if (totalLoss >= policy.MaxDailyLossAccountCurrency) reasons.Add($"Daily loss {totalLoss} >= {policy.MaxDailyLossAccountCurrency}");
+        }
 
         // Exposure
+        if (request.AllPositions.Any(p => p.OpenLevel is null)) reasons.Add("Position level missing");
         var sameEpicExposure = request.AllPositions.Where(p => p.Epic == intent.Epic).Sum(p => p.Size * (p.OpenLevel ?? 0m));
         var grossExposure = request.AllPositions.Sum(p => p.Size * (p.OpenLevel ?? 0m)) + (intent.Size * (intent.Side == OrderSide.Buy ? quote.Ask : quote.Bid));
         if (grossExposure > policy.MaxGrossExposureAccountCurrency) reasons.Add("Gross exposure exceeded");
@@ -84,9 +100,10 @@ public sealed class RiskEngine : IRiskEngine
         if (request.AllWorkingOrders.Count >= policy.MaxPendingOrders) reasons.Add("Max pending orders");
 
         // Margin
-        var marginUtil = acct.Equity > 0 ? (acct.MarginUsed / acct.Equity * 100m) : 0m;
-        if (marginUtil > policy.MaxMarginUtilizationPercent) reasons.Add("Margin utilization exceeded");
-        if (acct.FreeMargin < policy.MinFreeMarginBufferAccountCurrency) reasons.Add("Insufficient free margin buffer");
+        if (acct.MarginUsed is null) reasons.Add("Margin used unavailable");
+        else if (acct.Equity is > 0 && acct.MarginUsed.Value / acct.Equity.Value * 100m > policy.MaxMarginUtilizationPercent) reasons.Add("Margin utilization exceeded");
+        if (acct.FreeMargin is null) reasons.Add("Free margin unavailable");
+        else if (acct.FreeMargin.Value < policy.MinFreeMarginBufferAccountCurrency) reasons.Add("Insufficient free margin buffer");
 
         // Modeled downside
         if (policy.MaxModeledDownsideAccountCurrency is not null && preview.EstimatedRiskAccountCurrency > policy.MaxModeledDownsideAccountCurrency.Value)

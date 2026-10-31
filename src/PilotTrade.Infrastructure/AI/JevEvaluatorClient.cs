@@ -49,6 +49,7 @@ public sealed class JevEvaluatorClient : IJevEvaluator
             }
         }
         var modelVersion = root.TryGetProperty("modelVersion", out var mv) ? mv.GetString() ?? request.ModelId : request.ModelId;
-        return new JevResult(_ids.NewId("jev"), request.SnapshotId, request.ModelId, modelVersion, answers, _clock.UtcNow, _clock.UtcNow - start);
+        return new JevResult(_ids.NewId("jev"), request.SnapshotId, request.ModelId, modelVersion, answers, _clock.UtcNow, _clock.UtcNow - start,
+            request.AccountId, request.Epic, request.Environment, request.SelectionVersion);
     }
 }

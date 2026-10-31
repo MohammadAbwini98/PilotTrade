@@ -54,7 +54,8 @@ public sealed class EfOrderJournal : IOrderJournal
 
     public async Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct)
     {
-        var list = await _db.OrderJournals.Where(x => x.Environment == env.ToString() && x.AccountId == accountId && x.State == OrderState.Unknown.ToString()).ToListAsync(ct);
+        // A row left in Submitting means the process stopped mid-submit, so its broker outcome is unknown too.
+        var list = await _db.OrderJournals.Where(x => x.Environment == env.ToString() && x.AccountId == accountId && (x.State == OrderState.Unknown.ToString() || x.State == OrderState.Submitting.ToString())).ToListAsync(ct);
         return list.Select(ToEntry).ToList();
     }
 }

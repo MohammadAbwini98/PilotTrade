@@ -1,27 +1,19 @@
 # Phase 3 Gate Report
 
-Date: 2026-10-31
-Commit: (latest)
+Date: 2026-10-31. Details: `CAPITAL_DEMO_READONLY_HARDENING_REPORT.md`.
 
-## Gate A — Contract completeness: PARTIAL
-Capital.com adapter has real HTTP session/search/history/positions/submit/confirm; submit/confirm not live-verified.
-
-## Gate B — Authenticated Demo read-only: BLOCKED
-No Demo credentials available.
-
+## Gate A — Contract completeness: PASS against documentation and mocks only
+## Gate B — Authenticated Demo read-only: NOT RUN
+Credentials are stored, but using them awaits owner approval.
 ## Gate C — Verified Demo order: BLOCKED
-No owner approval/credentials.
-
+Execution is disabled, and needs Gate B and separate authorization.
 ## Gate D — Autonomous Demo: BLOCKED
-
 ## Gate E — Resilience/replay: PARTIAL
-Durable journal + startup reconciliation implemented; replay skeleton only.
-
+Durable journal and reconciliation are tested; replay is a skeleton.
 ## Gate F — Packaging: PARTIAL
-Windows x64 published and smoke-tested; macOS arm64 not validated on real Mac.
-
+Windows x64 and macOS arm64 publish. The Windows anonymous smoke test passes; the owner flow and macOS need CI.
 ## Gate L — Live isolation: PASS
-Tests prove Live not armed; Live broker adapter returns rejected; no Live order path in Demo suite.
+Live configuration stops startup, in tests and in the published Windows build.
 
 ## Demo GO: NO
 ## Live GO: NO (LOCKED)

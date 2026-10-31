@@ -12,5 +12,4 @@ global using PilotTrade.Application.Controls;
 global using PilotTrade.Api;
 global using PilotTrade.Infrastructure.Broker;
 global using PilotTrade.Infrastructure.Security;
-global using PilotTrade.Domain.Security;
 global using PilotTrade.Application.Security;

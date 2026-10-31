@@ -33,14 +33,19 @@ public sealed record ClaudeAnalysisResult(
     int InputTokens,
     int OutputTokens,
     decimal CostUsd,
-    TimeSpan Latency);
+    TimeSpan Latency,
+    string AccountId);
 
 public sealed record JevQuestion(string Name, string Type, IReadOnlyList<string>? Choices);
 public sealed record JevRequest(
     string SnapshotId,
     string ModelId,
     string StateJson,
-    IReadOnlyList<JevQuestion> Questions);
+    IReadOnlyList<JevQuestion> Questions,
+    string AccountId,
+    string Epic,
+    TradingEnvironment Environment,
+    int SelectionVersion);
 
 public sealed record JevAnswer(string QuestionName, string? Choice, double? Score, string? Text);
 public sealed record JevResult(
@@ -50,7 +55,11 @@ public sealed record JevResult(
     string ModelVersion,
     IReadOnlyList<JevAnswer> Answers,
     DateTimeOffset ProducedUtc,
-    TimeSpan Latency);
+    TimeSpan Latency,
+    string AccountId,
+    string Epic,
+    TradingEnvironment Environment,
+    int SelectionVersion);
 
 public interface IClaudeAnalyst
 {

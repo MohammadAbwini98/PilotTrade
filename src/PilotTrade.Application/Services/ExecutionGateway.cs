@@ -26,6 +26,10 @@ public sealed class ExecutionGateway : IExecutionGateway
         var now = _clock.UtcNow;
         var intent = request.Intent;
 
+        // Adapter-level lock: Capital.com execution stays off, and nothing is journaled because nothing is sent.
+        if (!_broker.ExecutionEnabled)
+            return Reject(intent.IntentId, "Broker execution disabled", now);
+
         // Kill switch
         if (_control.State.KillSwitchEngaged)
             return Reject(intent.IntentId, "Kill switch engaged", now);
@@ -88,9 +92,11 @@ public sealed class ExecutionGateway : IExecutionGateway
         }
         catch (Exception ex)
         {
-            entry = entry with { State = OrderState.Unknown, RejectionReason = ex.Message, UpdatedUtc = _clock.UtcNow };
-            await _journal.UpdateAsync(entry, ct);
-            return new ExecutionResult(intent.IntentId, OrderState.Unknown, null, null, ex.Message, _clock.UtcNow);
+            // Outcome unknown: journal it for reconciliation and never resubmit.
+            var reason = $"Broker outcome uncertain ({ex.GetType().Name})";
+            entry = entry with { State = OrderState.Unknown, RejectionReason = reason, UpdatedUtc = _clock.UtcNow };
+            await _journal.UpdateAsync(entry, CancellationToken.None);
+            return new ExecutionResult(intent.IntentId, OrderState.Unknown, null, null, reason, _clock.UtcNow);
         }
     }
 

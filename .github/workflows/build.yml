@@ -15,10 +15,29 @@ jobs:
           node-version: '20'
       - run: npm ci
         working-directory: src/PilotTrade.Web
+      - run: npm run lint
+        working-directory: src/PilotTrade.Web
       - run: npm run build
         working-directory: src/PilotTrade.Web
-      - run: dotnet test PilotTrade.slnx
+      - run: npm audit --omit=dev
+        working-directory: src/PilotTrade.Web
+      - name: Check for vulnerable NuGet packages
+        shell: pwsh
+        run: |
+          $report = dotnet list PilotTrade.slnx package --vulnerable --include-transitive
+          $report
+          if ($report -match 'has the following vulnerable packages') { exit 1 }
+      - name: Credential and owner authorization tests
+        run: dotnet test PilotTrade.slnx --filter "Category=Credentials|Category=OwnerAuthorization"
+      - name: Full test suite
+        run: dotnet test PilotTrade.slnx
       - run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r win-x64 --self-contained true -o release/win-x64
+      - name: Smoke test
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1 -Executable release/win-x64/PilotTrade.Api.exe
+      - name: Secret scan
+        shell: pwsh
+        run: ./scripts/secret-scan.ps1 -ExtraPaths release/win-x64
       - uses: actions/upload-artifact@v4
         with:
           name: win-x64
@@ -36,15 +55,28 @@ jobs:
           node-version: '20'
       - run: npm ci
         working-directory: src/PilotTrade.Web
+      - run: npm run lint
+        working-directory: src/PilotTrade.Web
       - run: npm run build
         working-directory: src/PilotTrade.Web
-      - run: dotnet test PilotTrade.slnx
+      - name: Create a throwaway keychain
+        run: |
+          security create-keychain -p ci-only pilottrade-ci.keychain
+          security set-keychain-settings pilottrade-ci.keychain
+          security unlock-keychain -p ci-only pilottrade-ci.keychain
+          security list-keychains -d user -s pilottrade-ci.keychain
+          security default-keychain -d user -s pilottrade-ci.keychain
+      - name: Credential and owner authorization tests
+        run: dotnet test PilotTrade.slnx --filter "Category=Credentials|Category=OwnerAuthorization"
+      - name: Full test suite
+        run: dotnet test PilotTrade.slnx
       - run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r osx-arm64 --self-contained true -o release/osx-arm64
       - name: Smoke test
-        run: |
-          ./release/osx-arm64/PilotTrade.Api --urls http://127.0.0.1:5100 &
-          sleep 8
-          curl -fsS http://127.0.0.1:5100/health
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1 -Executable release/osx-arm64/PilotTrade.Api
+      - name: Secret scan
+        shell: pwsh
+        run: ./scripts/secret-scan.ps1 -ExtraPaths release/osx-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: osx-arm64

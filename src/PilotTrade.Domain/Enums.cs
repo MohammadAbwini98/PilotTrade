@@ -27,3 +27,7 @@ public enum RiskDecision { Approved, Rejected }
 public enum FeedHealth { Healthy, Stale, Disconnected, Unknown }
 
 public enum AuthorizationState { Locked, Armed, Expired, Revoked }
+
+public enum BrokerMode { Simulation, CapitalDemo }
+
+public enum DistanceUnit { Points, Percentage }

@@ -7,15 +7,24 @@ using PilotTrade.Domain.Market;
 
 public sealed class DecisionCoordinator : IDecisionCoordinator
 {
+    private readonly IClock _clock;
+    public DecisionCoordinator(IClock clock) { _clock = clock; }
+
     public StrategyDecision Decide(DecisionCoordinatorInput input)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.UtcNow;
         var snap = input.Snapshot;
         var checks = new List<string>();
         var rejection = (string?)null;
 
         // Staleness: snapshot age
         if (now - snap.AsOfUtc > TimeSpan.FromMinutes(5)) { rejection = "Snapshot stale"; }
+
+        // Instrument or account switching: only the selection in force now may produce a candidate.
+        var selection = input.CurrentSelection;
+        if (selection is null) { rejection ??= "Current selection missing"; }
+        else if (selection.Epic != snap.Epic || selection.SelectionVersion != snap.SelectionVersion || selection.AccountId != snap.AccountId || selection.Environment != snap.Environment)
+        { rejection ??= "Selection changed: snapshot outdated"; }
 
         var claude = input.Claude;
         var jev = input.Jev;
@@ -26,12 +35,18 @@ public sealed class DecisionCoordinator : IDecisionCoordinator
             if (claude.SnapshotId != snap.SnapshotId) { rejection ??= "Claude snapshot mismatch"; }
             if (claude.SelectionVersion != snap.SelectionVersion) { rejection ??= "Claude selection version mismatch"; }
             if (claude.Environment != snap.Environment) { rejection ??= "Claude environment mismatch"; }
+            if (claude.Epic != snap.Epic) { rejection ??= "Claude instrument mismatch"; }
+            if (claude.AccountId != snap.AccountId) { rejection ??= "Claude account mismatch"; }
             if (claude.ValidUntilUtc < now) { rejection ??= "Claude signal expired"; }
         }
         if (jev is null) { rejection ??= "JEV missing"; }
         else
         {
             if (jev.SnapshotId != snap.SnapshotId) { rejection ??= "JEV snapshot mismatch"; }
+            if (jev.SelectionVersion != snap.SelectionVersion) { rejection ??= "JEV selection version mismatch"; }
+            if (jev.Environment != snap.Environment) { rejection ??= "JEV environment mismatch"; }
+            if (jev.Epic != snap.Epic) { rejection ??= "JEV instrument mismatch"; }
+            if (jev.AccountId != snap.AccountId) { rejection ??= "JEV account mismatch"; }
         }
 
         // Determine candidate

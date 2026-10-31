@@ -70,7 +70,7 @@ public sealed class ClaudeAnalystClient : IClaudeAnalyst
             ReadStringArray(root, "entryConditions"),
             ReadStringArray(root, "invalidationConditions"),
             ReadStringArray(root, "uncertaintyNotes"),
-            validUntil, _clock.UtcNow, inTok, outTok, 0m, _clock.UtcNow - start);
+            validUntil, _clock.UtcNow, inTok, outTok, 0m, _clock.UtcNow - start, request.Snapshot.AccountId);
     }
 
     private async Task<string> GetKeyAsync(CancellationToken ct) =>

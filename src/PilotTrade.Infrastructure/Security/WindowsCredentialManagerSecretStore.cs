@@ -1,20 +1,18 @@
 namespace PilotTrade.Infrastructure.Security;
 
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using PilotTrade.Domain.Security;
 
+[SupportedOSPlatform("windows")]
 public sealed class WindowsCredentialManagerSecretStore : ISecretStore
 {
     private readonly bool _allowProtectedMutations;
     public WindowsCredentialManagerSecretStore(bool allowProtectedMutations = false) { _allowProtectedMutations = allowProtectedMutations; }
 
-    private static bool IsProtectedTarget(string target) =>
-        target.StartsWith("CapitalTrading/Demo/", StringComparison.OrdinalIgnoreCase) ||
-        target.StartsWith("CapitalTrading/Live/", StringComparison.OrdinalIgnoreCase);
-
     private void GuardProtected(string target, string operation)
     {
-        if (IsProtectedTarget(target) && !_allowProtectedMutations)
+        if (CredentialTargets.IsProtected(target) && !_allowProtectedMutations)
             throw new InvalidOperationException($"Protected credential target '{target}' cannot be {operation} by this caller.");
     }
 
@@ -53,16 +51,7 @@ public sealed class WindowsCredentialManagerSecretStore : ISecretStore
     [DllImport("advapi32.dll")]
     private static extern void CredFree(IntPtr credential);
 
-    private static string TargetFor(string key) => key switch
-    {
-        "capital:Demo:api_key" => "CapitalTrading/Demo/ApiKey",
-        "capital:Demo:password" => "CapitalTrading/Demo/ApiPassword",
-        "capital:Demo:identifier" => "CapitalTrading/Demo/Identifier",
-        "capital:Live:api_key" => "CapitalTrading/Live/ApiKey",
-        "capital:Live:password" => "CapitalTrading/Live/ApiPassword",
-        "capital:Live:identifier" => "CapitalTrading/Live/Identifier",
-        _ => key
-    };
+    private static string TargetFor(string key) => CredentialTargets.For(key);
 
     public Task SetAsync(string key, string value, CancellationToken ct)
     {
@@ -70,17 +59,19 @@ public sealed class WindowsCredentialManagerSecretStore : ISecretStore
         GuardProtected(target, "written");
         var blob = System.Text.Encoding.Unicode.GetBytes(value);
         var ptr = Marshal.AllocHGlobal(blob.Length);
+        var targetName = Marshal.StringToHGlobalUni(target);
+        var userName = Marshal.StringToHGlobalUni(Environment.UserName);
         try
         {
             Marshal.Copy(blob, 0, ptr, blob.Length);
             var cred = new CREDENTIAL
             {
                 Type = CRED_TYPE_GENERIC,
-                TargetName = Marshal.StringToHGlobalUni(target),
+                TargetName = targetName,
                 CredentialBlobSize = (uint)blob.Length,
                 CredentialBlob = ptr,
                 Persist = CRED_PERSIST_LOCAL_MACHINE,
-                UserName = Marshal.StringToHGlobalUni(Environment.UserName)
+                UserName = userName
             };
             if (!CredWrite(ref cred, 0))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -89,6 +80,8 @@ public sealed class WindowsCredentialManagerSecretStore : ISecretStore
         finally
         {
             Marshal.FreeHGlobal(ptr);
+            Marshal.FreeHGlobal(targetName);
+            Marshal.FreeHGlobal(userName);
         }
     }
 

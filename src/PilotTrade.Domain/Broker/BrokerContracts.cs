@@ -21,12 +21,30 @@ public sealed record BrokerAccount(
     TradingEnvironment Environment,
     string Currency,
     decimal Balance,
-    decimal Equity,
-    decimal FreeMargin,
-    decimal MarginUsed,
+    // Null means the broker did not supply the value (or it could not be proven); risk checks fail closed on null.
+    decimal? Equity,
+    decimal? FreeMargin,
+    decimal? MarginUsed,
     decimal UnrealizedPnL,
-    decimal RealizedPnLToday,
-    DateTimeOffset AsOfUtc);
+    decimal? RealizedPnLToday,
+    DateTimeOffset AsOfUtc,
+    bool EquityIsDerived = false);
+
+public sealed record BrokerAccountSummary(
+    string AccountId,
+    string? Name,
+    string? Status,
+    string? Currency,
+    bool Preferred);
+
+public sealed record InstrumentSummary(
+    string Epic,
+    string Name,
+    string? Symbol,
+    InstrumentAssetClass AssetClass,
+    MarketStatus Status,
+    decimal? Bid,
+    decimal? Offer);
 
 public sealed record InstrumentMetadata(
     string Epic,
@@ -51,7 +69,10 @@ public sealed record InstrumentMetadata(
     IReadOnlyList<string> TradingHours,
     DateTimeOffset RetrievedUtc,
     string AccountId,
-    TradingEnvironment Environment);
+    TradingEnvironment Environment,
+    DistanceUnit MinStopDistanceUnit = DistanceUnit.Points,
+    DistanceUnit MaxStopDistanceUnit = DistanceUnit.Points,
+    bool GuaranteedStopAllowed = false);
 
 public sealed record MarketQuote(
     string Epic,
@@ -102,7 +123,9 @@ public sealed record WorkingOrder(
     decimal? StopLevel,
     decimal? ProfitLevel,
     DateTimeOffset CreatedUtc,
-    DateTimeOffset AsOfUtc);
+    DateTimeOffset AsOfUtc,
+    decimal? StopDistance = null,
+    decimal? ProfitDistance = null);
 
 public sealed record OrderIntent(
     string IntentId,
@@ -128,7 +151,10 @@ public sealed record BrokerSubmissionResult(
     OrderState State,
     string? RejectionReason,
     DateTimeOffset SubmittedUtc,
-    DateTimeOffset? ConfirmedUtc);
+    DateTimeOffset? ConfirmedUtc,
+    IReadOnlyList<AffectedDeal>? AffectedDeals = null);
+
+public sealed record AffectedDeal(string DealId, string? Status);
 
 public sealed record OrderPreview(
     OrderIntent Intent,
@@ -144,9 +170,11 @@ public sealed record OrderPreview(
 public interface IBrokerAdapter
 {
     TradingEnvironment Environment { get; }
+    bool ExecutionEnabled { get; }
     Task<BrokerSession> CreateSessionAsync(CancellationToken ct);
+    Task<IReadOnlyList<BrokerAccountSummary>> GetAccountsAsync(CancellationToken ct);
     Task<BrokerAccount> GetAccountAsync(string accountId, CancellationToken ct);
-    Task<IReadOnlyList<InstrumentMetadata>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct);
+    Task<IReadOnlyList<InstrumentSummary>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct);
     Task<InstrumentMetadata?> GetInstrumentAsync(string epic, string accountId, CancellationToken ct);
     Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct);
     Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct);

@@ -38,7 +38,7 @@ public sealed record MarketSnapshotBundle(
 
 public interface IInstrumentCatalog
 {
-    Task<IReadOnlyList<InstrumentMetadata>> SearchAsync(string query, int limit, CancellationToken ct);
+    Task<IReadOnlyList<InstrumentSummary>> SearchAsync(string query, int limit, CancellationToken ct);
     Task<InstrumentMetadata?> ResolveAsync(string epic, string accountId, TradingEnvironment env, CancellationToken ct);
 }
 

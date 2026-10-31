@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PilotTrade.Application.Controls;
 using PilotTrade.Application.Services;
@@ -11,54 +12,63 @@ using PilotTrade.Infrastructure.Broker;
 using PilotTrade.Infrastructure.Persistence;
 using PilotTrade.Infrastructure.Security;
 
+// Explicit owner request from their own terminal; the token is never written to logs.
+if (args.Contains("--show-owner-token"))
+{
+    var token = await new OwnerAuthorizationService(PlatformSecretStores.Create(allowProtectedMutations: false)).EnsureOwnerTokenAsync(CancellationToken.None);
+    Console.WriteLine(token);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContext<PilotTradeDbContext>(o =>
-    o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? "Data Source=pilottrade.db"), ServiceLifetime.Singleton);
+builder.Services.AddDbContext<PilotTradeDbContext>((sp, o) =>
+    o.UseSqlite(sp.GetRequiredService<IConfiguration>().GetConnectionString("Default") ?? "Data Source=pilottrade.db"), ServiceLifetime.Singleton);
 
+builder.Services.AddOpenApi();
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IIdGenerator, GuidIdGenerator>();
-builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
-    ? new WindowsCredentialManagerSecretStore(allowProtectedMutations: false)
-    : new InMemorySecretStore());
-// Privileged credential management (explicit owner-authorized only)
-if (OperatingSystem.IsWindows())
+builder.Services.AddSingleton(sp =>
 {
-    builder.Services.AddSingleton<IOwnerAuthorizationService>(sp => new OwnerAuthorizationService(sp.GetRequiredService<ISecretStore>()));
-    builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
-        new PrivilegedCredentialManager(new WindowsCredentialManagerSecretStore(allowProtectedMutations: true), sp.GetRequiredService<IOwnerAuthorizationService>()));
-}
-else
-{
-    builder.Services.AddSingleton<IOwnerAuthorizationService>(sp => new OwnerAuthorizationService(sp.GetRequiredService<ISecretStore>()));
-    builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
-        new PrivilegedCredentialManager(new InMemorySecretStore(), sp.GetRequiredService<IOwnerAuthorizationService>()));
-}
+    var config = sp.GetRequiredService<IConfiguration>();
+    return BrokerRuntimeOptions.Parse(config["BROKER_MODE"], config["TRADING_ENVIRONMENT"], config["TRADING_ACCOUNT_ID"]);
+});
+// Reads and owner-authorized writes use the same OS-protected store; only writers may change protected targets.
+builder.Services.AddSingleton<ISecretStore>(_ => PlatformSecretStores.Create(allowProtectedMutations: false));
+builder.Services.AddKeyedSingleton<ISecretStore>("privileged", (_, _) => PlatformSecretStores.Create(allowProtectedMutations: true));
+builder.Services.AddSingleton<IOwnerAuthorizationService>(sp => new OwnerAuthorizationService(sp.GetRequiredService<ISecretStore>()));
+builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
+    new PrivilegedCredentialManager(sp.GetRequiredKeyedService<ISecretStore>("privileged")));
 builder.Services.AddSingleton<ICsrfTokenService, InMemoryCsrfTokenService>();
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
 builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
-var envStr = builder.Configuration["TRADING_ENVIRONMENT"] ?? "demo";
-var env = envStr.Equals("live", StringComparison.OrdinalIgnoreCase) ? TradingEnvironment.Live : TradingEnvironment.Demo;
-var accountId = builder.Configuration["TRADING_ACCOUNT_ID"] ?? "SIM-ACC";
-builder.Services.AddSingleton<ITradingControl>(sp => new PersistedTradingControl(sp.GetRequiredService<IPersistedExecutionState>(), env, accountId, sp.GetRequiredService<IClock>()));
-builder.Services.AddSingleton<IBrokerSessionFactory, BrokerAdapterFactory>();
-builder.Services.AddSingleton<IBrokerAdapter>(sp =>
+builder.Services.AddSingleton<ITradingControl>(sp =>
 {
-    var factory = sp.GetRequiredService<IBrokerSessionFactory>();
-    return factory.Create(env);
+    var options = sp.GetRequiredService<BrokerRuntimeOptions>();
+    return new PersistedTradingControl(sp.GetRequiredService<IPersistedExecutionState>(), options.Environment, options.AccountId, sp.GetRequiredService<IClock>());
 });
+builder.Services.AddSingleton<BrokerAdapterFactory>();
+builder.Services.AddSingleton<IBrokerSessionFactory>(sp => sp.GetRequiredService<BrokerAdapterFactory>());
+builder.Services.AddSingleton<IBrokerAdapter>(sp =>
+    sp.GetRequiredService<IBrokerSessionFactory>().Create(sp.GetRequiredService<BrokerRuntimeOptions>().Environment));
 builder.Services.AddSingleton<IInstrumentCatalog>(sp => new InstrumentCatalogService(sp.GetRequiredService<IBrokerAdapter>()));
+builder.Services.AddSingleton<IInstrumentSelectionService, InstrumentSelectionService>();
 builder.Services.AddSingleton<IMarketDataService>(sp => new MarketDataService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IRiskEngine, RiskEngine>();
 builder.Services.AddSingleton<IDecisionCoordinator, DecisionCoordinator>();
 builder.Services.AddSingleton<IPositionGuardian>(sp => new PositionGuardian(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IAuditLogger, EfAuditLogger>();
-builder.Services.AddHttpClient("capital");
+// The default HttpClient logging records request URLs, which have no place in this app's logs.
+builder.Services.AddHttpClient("capital", c => c.Timeout = TimeSpan.FromSeconds(20)).RemoveAllLoggers();
+builder.Services.AddSingleton<OrderReconciliationService>();
 builder.Services.AddHostedService<StartupReconciliationService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+
+// Invalid broker configuration (including any request for Live) stops startup here.
+var runtime = app.Services.GetRequiredService<BrokerRuntimeOptions>();
 
 using (var scope = app.Services.CreateScope())
 {
@@ -66,88 +76,110 @@ using (var scope = app.Services.CreateScope())
     db.Database.Migrate();
 }
 
-// Ensure owner token exists (printed once to console on first run)
-using (var scope = app.Services.CreateScope())
+// Explicitly requested, sanitized read-only evidence run: POST/PUT /session plus GETs, no order endpoints.
+var evidenceIndex = Array.IndexOf(args, "--demo-readonly-evidence");
+if (evidenceIndex >= 0)
 {
-    var auth = scope.ServiceProvider.GetRequiredService<IOwnerAuthorizationService>();
-    _ = auth.EnsureOwnerTokenAsync(CancellationToken.None).GetAwaiter().GetResult();
+    if (evidenceIndex + 1 >= args.Length) { Console.Error.WriteLine("Usage: --demo-readonly-evidence <output.json> [--epic EPIC]"); Environment.ExitCode = 2; return; }
+    var epicIndex = Array.IndexOf(args, "--epic");
+    var probeEpic = epicIndex >= 0 && epicIndex + 1 < args.Length ? args[epicIndex + 1] : "EURUSD";
+    var probeAccount = string.IsNullOrWhiteSpace(app.Configuration["TRADING_ACCOUNT_ID"]) ? null : runtime.AccountId;
+    var adapter = app.Services.GetRequiredService<BrokerAdapterFactory>().CreateCapitalDemo(probeAccount);
+    var evidence = await new DemoReadOnlyProbe(adapter, app.Services.GetRequiredService<IClock>()).RunAsync(probeAccount, probeEpic, CancellationToken.None);
+    await File.WriteAllTextAsync(args[evidenceIndex + 1], JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine(evidence.AllPassed ? "All read-only steps passed." : "One or more read-only steps failed.");
+    Environment.ExitCode = evidence.AllPassed ? 0 : 1;
+    return;
 }
 
+try { await app.Services.GetRequiredService<IOwnerAuthorizationService>().EnsureOwnerTokenAsync(CancellationToken.None); }
+catch (PlatformNotSupportedException) { app.Logger.LogWarning("No OS-protected credential store on this platform; all /api routes will refuse access."); }
+
+app.UseExceptionHandler(a => a.Run(ctx =>
+{
+    ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    return ctx.Response.WriteAsJsonAsync(new { error = "internal_error" });
+}));
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
+if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTimeOffset.UtcNow }));
 
-// Instruments
-app.MapGet("/api/instruments/search", async (string q, int? limit, IInstrumentCatalog catalog, CancellationToken ct) =>
-    Results.Ok(await catalog.SearchAsync(q ?? "", limit ?? 50, ct)));
+var api = app.MapGroup("/api").AddEndpointFilter(ApiSecurity.RequireOwner).AddEndpointFilter(ApiSecurity.SanitizeBrokerErrors);
+var guarded = api.MapGroup("").AddEndpointFilter(ApiSecurity.RequireBrowserGuards);
 
-app.MapGet("/api/instruments/{epic}", async (string epic, string accountId, TradingEnvironment? env, IBrokerAdapter broker, CancellationToken ct) =>
+api.MapGet("/runtime", (BrokerRuntimeOptions options, IBrokerAdapter broker) => Results.Ok(new
 {
-    var e = env ?? TradingEnvironment.Demo;
+    mode = options.Mode.ToString(),
+    environment = options.Environment.ToString(),
+    accountId = options.AccountId,
+    executionEnabled = broker.ExecutionEnabled,
+    liveLocked = true
+}));
+
+api.MapGet("/security/csrf-token", (ICsrfTokenService csrf) => Results.Ok(new { csrfToken = csrf.IssueToken() }));
+
+// Instruments
+api.MapGet("/instruments/search", async (string? q, int? limit, IInstrumentCatalog catalog, CancellationToken ct) =>
+    Results.Ok(await catalog.SearchAsync(q ?? "", Math.Clamp(limit ?? 50, 1, 200), ct)));
+
+api.MapGet("/instruments/selection", (string accountId, BrokerRuntimeOptions options, IInstrumentSelectionService selections) =>
+    selections.Current(accountId, options.Environment) is { } s ? Results.Ok(s) : Results.NotFound());
+
+api.MapGet("/instruments/{epic}", async (string epic, string accountId, IBrokerAdapter broker, CancellationToken ct) =>
+{
     var m = await broker.GetInstrumentAsync(epic, accountId, ct);
     return m is null ? Results.NotFound() : Results.Ok(m);
 });
 
+guarded.MapPost("/instruments/select", async (InstrumentSelectRequest req, IBrokerAdapter broker, BrokerRuntimeOptions options, IInstrumentSelectionService selections, CancellationToken ct) =>
+{
+    var meta = await broker.GetInstrumentAsync(req.Epic, req.AccountId, ct);
+    if (meta is null) return Results.NotFound(new { error = "NotFound" });
+    return Results.Ok(new { selection = selections.Select(req.AccountId, options.Environment, req.Epic, "owner"), instrument = meta });
+});
+
 // Account
-app.MapGet("/api/account", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
+api.MapGet("/accounts", async (IBrokerAdapter broker, CancellationToken ct) => Results.Ok(await broker.GetAccountsAsync(ct)));
+
+api.MapGet("/account", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
     Results.Ok(await broker.GetAccountAsync(accountId, ct)));
 
 // Positions
-app.MapGet("/api/positions", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
+api.MapGet("/positions", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
     Results.Ok(await broker.GetPositionsAsync(accountId, ct)));
 
-app.MapGet("/api/orders", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
+api.MapGet("/orders", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
     Results.Ok(await broker.GetWorkingOrdersAsync(accountId, ct)));
 
-// Market snapshot
-app.MapPost("/api/market/snapshot", async (MarketSnapshotRequest req, IMarketDataService mds, CancellationToken ct) =>
+// Market snapshot: any missing, invalid or outdated input is a NO_TRADE result, not a partial snapshot.
+guarded.MapPost("/market/snapshot", async (MarketSnapshotRequest req, IMarketDataService mds, IInstrumentSelectionService selections, BrokerRuntimeOptions options, CancellationToken ct) =>
 {
+    var current = selections.Current(req.AccountId, options.Environment);
+    if (current is null || current.Epic != req.Epic || current.SelectionVersion != req.SelectionVersion)
+        return Results.Ok(new { outcome = "NO_TRADE", reason = "Selection changed: request outdated", snapshot = (MarketSnapshotBundle?)null });
     try
     {
-        var bundle = await mds.BuildSnapshotAsync(req.AccountId, req.Environment, req.Epic, req.SelectionVersion, req.Timeframes ?? new[] { "5m", "1h" }, ct);
-        return Results.Ok(bundle);
+        var bundle = await mds.BuildSnapshotAsync(req.AccountId, options.Environment, req.Epic, req.SelectionVersion, req.Timeframes ?? new[] { "5m", "1h" }, ct);
+        return Results.Ok(new { outcome = "SNAPSHOT_READY", reason = (string?)null, snapshot = (MarketSnapshotBundle?)bundle });
     }
-    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
-});
-
-// Test Demo connection (read-only, no trades)
-app.MapPost("/api/demo/test-connection", async (ISecretStore secrets, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
-{
-    var apiKey = await secrets.GetAsync("capital:Demo:api_key", ct);
-    var identifier = await secrets.GetAsync("capital:Demo:identifier", ct);
-    var password = await secrets.GetAsync("capital:Demo:password", ct);
-    if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(identifier) || string.IsNullOrWhiteSpace(password))
-        return Results.BadRequest(new { error = "Demo credentials not configured in Windows Credential Manager (CapitalTrading/Demo/*)" });
-
-    var config = new BrokerEnvironmentConfig(TradingEnvironment.Demo, "https://demo-api-capital.backend-capital.com", null, false);
-    var httpFactory = app.Services.GetRequiredService<IHttpClientFactory>();
-    var broker = new CapitalComBrokerAdapter(config, secrets, httpFactory, clock, ids);
-    try
+    catch (MarketDataRejectedException ex)
     {
-        var session = await broker.CreateSessionAsync(ct);
-        var account = await broker.GetAccountAsync(session.AccountId == "" ? "demo" : session.AccountId, ct);
-        await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "TestConnection", "owner", "demo", account.AccountId, null, null, "{\"status\":\"ok\"}", true), ct);
-        return Results.Ok(new
-        {
-            status = "ok",
-            environment = "demo",
-            accountId = account.AccountId,
-            currency = account.Currency,
-            balance = account.Balance,
-            equity = account.Equity,
-            freeMargin = account.FreeMargin,
-            sessionId = session.SessionId
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.Ok(new { outcome = "NO_TRADE", reason = (string?)ex.Message, snapshot = (MarketSnapshotBundle?)null });
     }
 });
 
-// Risk preview endpoint (placeholder)
-app.MapGet("/api/demo/credential-status", async (ISecretStore secrets, CancellationToken ct) =>
+// Read-only Demo connection check. Returns sanitized evidence only.
+guarded.MapPost("/demo/test-connection", async (string? epic, BrokerAdapterFactory factory, BrokerRuntimeOptions options, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
+{
+    var target = options.Mode == BrokerMode.CapitalDemo ? options.AccountId : null;
+    var evidence = await new DemoReadOnlyProbe(factory.CreateCapitalDemo(target), clock).RunAsync(target, string.IsNullOrWhiteSpace(epic) ? "EURUSD" : epic, ct);
+    await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "TestConnection", "owner", "demo", null, null, null, JsonSerializer.Serialize(new { evidence.AllPassed }), true), ct);
+    return Results.Ok(evidence);
+});
+
+api.MapGet("/demo/credential-status", async (ISecretStore secrets, CancellationToken ct) =>
 {
     var key = await secrets.GetAsync("capital:Demo:api_key", ct);
     var id = await secrets.GetAsync("capital:Demo:identifier", ct);
@@ -160,25 +192,8 @@ app.MapGet("/api/demo/credential-status", async (ISecretStore secrets, Cancellat
     });
 });
 
-app.MapGet("/api/security/csrf-token", (ICsrfTokenService csrf) => Results.Ok(new { csrfToken = csrf.IssueToken() }));
-
-app.MapPost("/api/demo/configure-credentials", async (HttpContext http, CredentialSetupRequest req, IPrivilegedCredentialManager mgr, IOwnerAuthorizationService auth, ICsrfTokenService csrf, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
+guarded.MapPost("/demo/configure-credentials", async (CredentialSetupRequest req, IPrivilegedCredentialManager mgr, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
 {
-    // Loopback only
-    if (http.Connection.RemoteIpAddress is null || !System.Net.IPAddress.IsLoopback(http.Connection.RemoteIpAddress))
-        return Results.StatusCode(403);
-
-    var ownerToken = http.Request.Headers["X-PilotTrade-Owner-Token"].ToString();
-    var csrfToken = http.Request.Headers["X-PilotTrade-CSRF"].ToString();
-    var origin = http.Request.Headers["Origin"].ToString();
-    if (string.IsNullOrWhiteSpace(origin)) origin = http.Request.Headers["Referer"].ToString();
-    if (!origin.Contains("localhost") && !origin.Contains("127.0.0.1"))
-        return Results.StatusCode(403);
-    if (!csrf.Validate(csrfToken))
-        return Results.StatusCode(403);
-    if (!await auth.AuthorizeAsync(ownerToken, csrfToken, ct))
-        return Results.StatusCode(403);
-
     if (string.IsNullOrWhiteSpace(req.ApiKey) || string.IsNullOrWhiteSpace(req.ApiPassword) || string.IsNullOrWhiteSpace(req.Identifier))
         return Results.BadRequest(new { error = "All fields required" });
 
@@ -186,26 +201,20 @@ app.MapPost("/api/demo/configure-credentials", async (HttpContext http, Credenti
     {
         await mgr.ConfigureDemoCredentialsAsync(req.ApiKey, req.ApiPassword, req.Identifier, req.Replace, ct);
     }
-    catch (InvalidOperationException ex)
+    catch (InvalidOperationException)
     {
-        return Results.Conflict(new { error = ex.Message });
+        return Results.Conflict(new { error = "Credentials could not be saved. Replacing existing credentials needs an explicit replace." });
     }
     await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "ConfigureCredentials", "owner", "demo", null, null, null, "{\"status\":\"configured\"}", true), ct);
     return Results.Ok(new { status = "configured" });
 });
 
-app.MapGet("/api/health/feed", (IMarketDataService mds, string epic) => Results.Ok(new { epic, health = mds.GetFeedHealth(epic).ToString() }));
+api.MapGet("/health/feed", (IMarketDataService mds, string epic) => Results.Ok(new { epic, health = mds.GetFeedHealth(epic).ToString(), lastQuoteUtc = mds.LastQuoteUtc(epic) }));
 
 app.Run();
 
-public record MarketSnapshotRequest(string AccountId, TradingEnvironment Environment, string Epic, int SelectionVersion, string[]? Timeframes);
+public record MarketSnapshotRequest(string AccountId, string Epic, int SelectionVersion, string[]? Timeframes);
+public record InstrumentSelectRequest(string AccountId, string Epic);
 public record CredentialSetupRequest(string ApiKey, string ApiPassword, string Identifier, bool Replace = false);
 
 public partial class Program { }
-
-public class DefaultTradingControl : ITradingControl
-{
-    public TradingControlState State { get; } = new();
-    public void EngageKillSwitch() => State.KillSwitchEngaged = true;
-    public void DisarmLive() { State.LiveArmed = false; State.LiveArmedUntilUtc = null; }
-}

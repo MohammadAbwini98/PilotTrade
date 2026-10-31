@@ -1,29 +1,22 @@
 # API Verification
 
-Date verified: 2026-10-31 (by documentation review; live calls not executed due to no credentials).
+Reviewed 2026-10-31 from documentation and mocks. **No authenticated Capital.com request has been made.** This file records no real broker validation until sanitized evidence exists.
 
 ## Capital.com
 - Demo base: https://demo-api-capital.backend-capital.com
-- Live base: https://api-capital.backend-capital.com
-- Prefix: /api/v1
-- Auth: POST /api/v1/session; headers X-CAP-API-KEY; response headers CST, X-SECURITY-TOKEN.
-- Session inactivity: ~10 minutes (verify).
-- Rate limits: ~10 req/s/user; session creation 1 req/s; max 40 streaming instruments; demo order hourly limit (verify).
-- Instrument discovery: GET /api/v1/markets?searchTerm=...; details GET /api/v1/markets/{epic}.
-- History: GET /api/v1/prices/{epic} (resolution/max) — needs verification.
-- Positions: GET /api/v1/positions; working orders: GET /api/v1/workingorders.
-- Order submit/confirm: POST /api/v1/orders or /api/v1/positions; GET /api/v1/confirms/{dealReference} — needs verification.
-- Uncertainty: exact field names, order payloads, close/cancel endpoints. Capital.com real adapter returns not-verified for submit.
+- Live base: https://api-capital.backend-capital.com (never contacted; Live is locked)
+- Contract: see `BROKER_CONTRACT_MATRIX.md`.
+- Evidence: not yet recorded. See `DEMO_RELEASE_GO_NO_GO.md`.
 
 ## Anthropic Claude
-- Messages API: POST https://api.anthropic.com/v1/messages with x-api-key, anthropic-version.
-- Model ID must be verified/pinned; configured via ANTHROPIC_MODEL_ID.
+- Messages API: POST https://api.anthropic.com/v1/messages with x-api-key and anthropic-version.
+- The model ID is pinned through ANTHROPIC_MODEL_ID.
 
 ## TypeSafe JEV
 - GET https://api.typesafe.ai/v1/models
-- POST https://api.typesafe.ai/v1/systemone with model, state, questions.
-- Strict schema parsing; no-trade on malformed.
+- POST https://api.typesafe.ai/v1/systemone with model, state and questions.
+- Strict schema parsing; malformed responses are NO_TRADE.
 
-## Contract Test Plan
-- Simulator-based tests for all flows.
-- Real broker contract tests (BLOCKED without credentials).
+## Dependencies
+- GHSA-v5pm-xwqc-g5wc (Microsoft.OpenApi): resolved. `Microsoft.AspNetCore.OpenApi` 10.0.14 with `Microsoft.OpenApi` 2.13.0, above the patched 2.7.5. No warning is suppressed, and a test confirms `/openapi/v1.json` is still served in Development.
+- `dotnet list package --vulnerable --include-transitive` and `npm audit --omit=dev` report nothing. CI runs both on Windows.

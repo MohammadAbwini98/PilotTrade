@@ -1,5 +1,6 @@
 namespace PilotTrade.Infrastructure.Security;
 
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using PilotTrade.Domain.Security;
@@ -12,6 +13,45 @@ public sealed class InMemorySecretStore : ISecretStore
     public Task DeleteAsync(string key, CancellationToken ct) { _store.Remove(key); return Task.CompletedTask; }
 }
 
+// Fails closed: credentials are never held in memory or plaintext on an OS without a supported protected store.
+public sealed class UnsupportedPlatformSecretStore : ISecretStore
+{
+    private static PlatformNotSupportedException Error() => new("No OS-protected credential store is available on this platform.");
+    public Task SetAsync(string key, string value, CancellationToken ct) => throw Error();
+    public Task<string?> GetAsync(string key, CancellationToken ct) => throw Error();
+    public Task DeleteAsync(string key, CancellationToken ct) => throw Error();
+}
+
+public static class PlatformSecretStores
+{
+    // Configuration and retrieval both use this, so they always reference the same protected storage.
+    public static ISecretStore Create(bool allowProtectedMutations)
+    {
+        if (OperatingSystem.IsWindows()) return new WindowsCredentialManagerSecretStore(allowProtectedMutations);
+        if (OperatingSystem.IsMacOS()) return new MacOsKeychainSecretStore(allowProtectedMutations);
+        return new UnsupportedPlatformSecretStore();
+    }
+}
+
+internal static class CredentialTargets
+{
+    public static bool IsProtected(string target) =>
+        target.StartsWith("CapitalTrading/Demo/", StringComparison.OrdinalIgnoreCase) ||
+        target.StartsWith("CapitalTrading/Live/", StringComparison.OrdinalIgnoreCase);
+
+    public static string For(string key) => key switch
+    {
+        "capital:Demo:api_key" => "CapitalTrading/Demo/ApiKey",
+        "capital:Demo:password" => "CapitalTrading/Demo/ApiPassword",
+        "capital:Demo:identifier" => "CapitalTrading/Demo/Identifier",
+        "capital:Live:api_key" => "CapitalTrading/Live/ApiKey",
+        "capital:Live:password" => "CapitalTrading/Live/ApiPassword",
+        "capital:Live:identifier" => "CapitalTrading/Live/Identifier",
+        _ => key
+    };
+}
+
+[SupportedOSPlatform("windows")]
 public sealed class DpapiSecretStore : ISecretStore
 {
     private readonly string _dir;
