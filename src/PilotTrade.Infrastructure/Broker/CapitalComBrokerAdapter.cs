@@ -71,7 +71,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
             var identifier = await _secrets.GetAsync($"capital:{_config.Environment}:identifier", ct) ?? throw new InvalidOperationException("Missing identifier");
             var password = await _secrets.GetAsync($"capital:{_config.Environment}:password", ct) ?? throw new InvalidOperationException("Missing password");
             Exception? last = null;
-            for (int attempt = 0; attempt < 3; attempt++)
+            for (int attempt = 0; attempt < 5; attempt++)
             {
                 try
                 {
@@ -85,7 +85,9 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
                     if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500)
                     {
                         last = new InvalidOperationException($"Capital.com session HTTP {(int)resp.StatusCode}");
-                        await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)), ct);
+                        var delay = TimeSpan.FromSeconds(1.1);
+                        if (resp.Headers.RetryAfter?.Delta is TimeSpan d) delay = d + TimeSpan.FromMilliseconds(100);
+                        await Task.Delay(delay, ct);
                         continue;
                     }
                     if (!resp.IsSuccessStatusCode)
