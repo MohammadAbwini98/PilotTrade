@@ -5,6 +5,19 @@ using PilotTrade.Domain.Security;
 
 public sealed class WindowsCredentialManagerSecretStore : ISecretStore
 {
+    private readonly bool _allowProtectedMutations;
+    public WindowsCredentialManagerSecretStore(bool allowProtectedMutations = false) { _allowProtectedMutations = allowProtectedMutations; }
+
+    private static bool IsProtectedTarget(string target) =>
+        target.StartsWith("CapitalTrading/Demo/", StringComparison.OrdinalIgnoreCase) ||
+        target.StartsWith("CapitalTrading/Live/", StringComparison.OrdinalIgnoreCase);
+
+    private void GuardProtected(string target, string operation)
+    {
+        if (IsProtectedTarget(target) && !_allowProtectedMutations)
+            throw new InvalidOperationException($"Protected credential target '{target}' cannot be {operation} by this caller.");
+    }
+
     private const int CRED_TYPE_GENERIC = 1;
     private const int CRED_PERSIST_LOCAL_MACHINE = 2;
 
@@ -45,12 +58,16 @@ public sealed class WindowsCredentialManagerSecretStore : ISecretStore
         "capital:Demo:api_key" => "CapitalTrading/Demo/ApiKey",
         "capital:Demo:password" => "CapitalTrading/Demo/ApiPassword",
         "capital:Demo:identifier" => "CapitalTrading/Demo/Identifier",
+        "capital:Live:api_key" => "CapitalTrading/Live/ApiKey",
+        "capital:Live:password" => "CapitalTrading/Live/ApiPassword",
+        "capital:Live:identifier" => "CapitalTrading/Live/Identifier",
         _ => key
     };
 
     public Task SetAsync(string key, string value, CancellationToken ct)
     {
         var target = TargetFor(key);
+        GuardProtected(target, "written");
         var blob = System.Text.Encoding.Unicode.GetBytes(value);
         var ptr = Marshal.AllocHGlobal(blob.Length);
         try
@@ -98,6 +115,7 @@ public sealed class WindowsCredentialManagerSecretStore : ISecretStore
     public Task DeleteAsync(string key, CancellationToken ct)
     {
         var target = TargetFor(key);
+        GuardProtected(target, "deleted");
         if (!CredDelete(target, CRED_TYPE_GENERIC, 0))
         {
             var err = Marshal.GetLastWin32Error();

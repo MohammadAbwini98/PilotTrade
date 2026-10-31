@@ -70,17 +70,37 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
             var apiKey = await _secrets.GetAsync($"capital:{_config.Environment}:api_key", ct) ?? throw new InvalidOperationException("Missing API key");
             var identifier = await _secrets.GetAsync($"capital:{_config.Environment}:identifier", ct) ?? throw new InvalidOperationException("Missing identifier");
             var password = await _secrets.GetAsync($"capital:{_config.Environment}:password", ct) ?? throw new InvalidOperationException("Missing password");
-            var http = CreateHttp();
-            var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/session");
-            req.Headers.Add("X-CAP-API-KEY", apiKey);
-            var body = JsonSerializer.Serialize(new { identifier, password, encryptedPassword = false });
-            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
-            var resp = await http.SendAsync(req, ct);
-            resp.EnsureSuccessStatusCode();
-            var cst = resp.Headers.GetValues("CST").FirstOrDefault() ?? throw new InvalidOperationException("Missing CST");
-            var sec = resp.Headers.GetValues("X-SECURITY-TOKEN").FirstOrDefault() ?? throw new InvalidOperationException("Missing X-SECURITY-TOKEN");
-            _session = new BrokerSession(_ids.NewId("sess"), cst, sec, _clock.UtcNow.AddMinutes(10), _config.Environment, _config.AccountId ?? "");
-            return _session;
+            Exception? last = null;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    await ThrottleAsync(ct);
+                    var http = CreateHttp();
+                    var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/session");
+                    req.Headers.Add("X-CAP-API-KEY", apiKey);
+                    var body = JsonSerializer.Serialize(new { identifier, password, encryptedPassword = false });
+                    req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                    var resp = await http.SendAsync(req, ct);
+                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500)
+                    {
+                        last = new InvalidOperationException($"Capital.com session HTTP {(int)resp.StatusCode}");
+                        await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)), ct);
+                        continue;
+                    }
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        var errBody = await resp.Content.ReadAsStringAsync(ct);
+                        throw new InvalidOperationException($"Capital.com session failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {errBody}");
+                    }
+                    var cst = resp.Headers.GetValues("CST").FirstOrDefault() ?? throw new InvalidOperationException("Missing CST");
+                    var sec = resp.Headers.GetValues("X-SECURITY-TOKEN").FirstOrDefault() ?? throw new InvalidOperationException("Missing X-SECURITY-TOKEN");
+                    _session = new BrokerSession(_ids.NewId("sess"), cst, sec, _clock.UtcNow.AddMinutes(10), _config.Environment, _config.AccountId ?? "");
+                    return _session;
+                }
+                catch (Exception ex) { last = ex; await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)), ct); }
+            }
+            throw last ?? new InvalidOperationException("Session creation failed");
         }
         finally { _sessionLock.Release(); }
     }

@@ -19,7 +19,7 @@ builder.Services.AddDbContext<PilotTradeDbContext>(o =>
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IIdGenerator, GuidIdGenerator>();
 builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
-    ? new WindowsCredentialManagerSecretStore()
+    ? new WindowsCredentialManagerSecretStore(allowProtectedMutations: true)
     : new InMemorySecretStore());
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
 builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
@@ -126,11 +126,44 @@ app.MapPost("/api/demo/test-connection", async (ISecretStore secrets, IAuditLogg
 });
 
 // Risk preview endpoint (placeholder)
+app.MapGet("/api/demo/credential-status", async (ISecretStore secrets, CancellationToken ct) =>
+{
+    var key = await secrets.GetAsync("capital:Demo:api_key", ct);
+    var id = await secrets.GetAsync("capital:Demo:identifier", ct);
+    var pw = await secrets.GetAsync("capital:Demo:password", ct);
+    return Results.Ok(new
+    {
+        apiKeyPresent = !string.IsNullOrWhiteSpace(key),
+        apiKeyLength = key?.Length ?? 0,
+        identifierPresent = !string.IsNullOrWhiteSpace(id),
+        identifierLength = id?.Length ?? 0,
+        passwordPresent = !string.IsNullOrWhiteSpace(pw),
+        passwordLength = pw?.Length ?? 0
+    });
+});
+
+app.MapPost("/api/demo/configure-credentials", async (CredentialSetupRequest req, ISecretStore secrets, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.ApiKey) || string.IsNullOrWhiteSpace(req.ApiPassword) || string.IsNullOrWhiteSpace(req.Identifier))
+        return Results.BadRequest(new { error = "All fields required" });
+
+    var existing = await secrets.GetAsync("capital:Demo:api_key", ct);
+    if (!string.IsNullOrWhiteSpace(existing) && !req.Replace)
+        return Results.Conflict(new { error = "Credentials already configured. Set replace=true to overwrite." });
+
+    await secrets.SetAsync("capital:Demo:api_key", req.ApiKey, ct);
+    await secrets.SetAsync("capital:Demo:password", req.ApiPassword, ct);
+    await secrets.SetAsync("capital:Demo:identifier", req.Identifier, ct);
+    await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "ConfigureCredentials", "owner", "demo", null, null, null, "{\"status\":\"configured\"}", true), ct);
+    return Results.Ok(new { status = "configured" });
+});
+
 app.MapGet("/api/health/feed", (IMarketDataService mds, string epic) => Results.Ok(new { epic, health = mds.GetFeedHealth(epic).ToString() }));
 
 app.Run();
 
 public record MarketSnapshotRequest(string AccountId, TradingEnvironment Environment, string Epic, int SelectionVersion, string[]? Timeframes);
+public record CredentialSetupRequest(string ApiKey, string ApiPassword, string Identifier, bool Replace = false);
 
 public class DefaultTradingControl : ITradingControl
 {
