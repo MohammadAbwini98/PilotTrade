@@ -9,3 +9,4 @@ global using PilotTrade.Domain.Audit;
 global using PilotTrade.Domain.Security;
 global using PilotTrade.Application.Services;
 global using PilotTrade.Application.Controls;
+global using PilotTrade.Api;

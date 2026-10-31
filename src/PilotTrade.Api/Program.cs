@@ -22,6 +22,7 @@ builder.Services.AddSingleton<ISecretStore>(_ => OperatingSystem.IsWindows()
     ? new DpapiSecretStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PilotTrade", "secrets"))
     : new InMemorySecretStore());
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
+builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
 var envStr = builder.Configuration["TRADING_ENVIRONMENT"] ?? "demo";
 var env = envStr.Equals("live", StringComparison.OrdinalIgnoreCase) ? TradingEnvironment.Live : TradingEnvironment.Demo;
 var accountId = builder.Configuration["TRADING_ACCOUNT_ID"] ?? "SIM-ACC";
@@ -39,6 +40,7 @@ builder.Services.AddSingleton<IDecisionCoordinator, DecisionCoordinator>();
 builder.Services.AddSingleton<IPositionGuardian>(sp => new PositionGuardian(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IAuditLogger, EfAuditLogger>();
 builder.Services.AddHttpClient("capital");
+builder.Services.AddHostedService<StartupReconciliationService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
 

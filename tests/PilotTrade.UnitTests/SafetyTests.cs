@@ -53,11 +53,28 @@ public class SafetyTests
         var control = new TestTradingControl();
         control.State.Mode = TradingMode.MonitorOnly;
         var audit = new InMemoryAuditLogger();
-        var gw = new ExecutionGateway(broker, control, audit, clock, new GuidIdGenerator());
+        var gw = new ExecutionGateway(broker, control, audit, new InMemoryOrderJournal(), clock, new GuidIdGenerator());
         var intent = new OrderIntent("i2", "SIM-ACC", TradingEnvironment.Demo, "EURUSD", OrderSide.Buy, OrderType.Market, 1m, null, null, null, null, clock.UtcNow, "1", "snap", "strat1");
         var preview = new OrderPreview(intent, 1.1m, 10m, 5m, 0m, 2m, RiskDecision.Approved, Array.Empty<string>(), clock.UtcNow);
         var risk = new RiskEvaluationResult(RiskDecision.Approved, Array.Empty<string>(), 10m, 10m, clock.UtcNow);
         var req = new ExecutionRequest(intent, preview, risk, TradingMode.MonitorOnly, false);
+        var res = gw.ExecuteAsync(req, CancellationToken.None).Result;
+        res.FinalState.Should().Be(OrderState.Rejected);
+    }
+
+    [Fact]
+    public void ExecutionGateway_LiveBroker_NeverArmed_Rejects()
+    {
+        var clock = new FakeClock(DateTimeOffset.UtcNow);
+        var broker = new SimulatedBrokerAdapter(TradingEnvironment.Live, clock, new GuidIdGenerator());
+        var control = new TestTradingControl();
+        control.State.ReconciliationComplete = true;
+        var audit = new InMemoryAuditLogger();
+        var gw = new ExecutionGateway(broker, control, audit, new InMemoryOrderJournal(), clock, new GuidIdGenerator());
+        var intent = new OrderIntent("i3", "SIM-ACC", TradingEnvironment.Live, "EURUSD", OrderSide.Buy, OrderType.Market, 1m, null, null, null, null, clock.UtcNow, "1", "snap", "strat1");
+        var preview = new OrderPreview(intent, 1.1m, 10m, 5m, 0m, 2m, RiskDecision.Approved, Array.Empty<string>(), clock.UtcNow);
+        var risk = new RiskEvaluationResult(RiskDecision.Approved, Array.Empty<string>(), 10m, 10m, clock.UtcNow);
+        var req = new ExecutionRequest(intent, preview, risk, TradingMode.LiveArmed, true);
         var res = gw.ExecuteAsync(req, CancellationToken.None).Result;
         res.FinalState.Should().Be(OrderState.Rejected);
     }
@@ -74,6 +91,21 @@ public class TestTradingControl : ITradingControl
     public TradingControlState State { get; } = new();
     public void EngageKillSwitch() => State.KillSwitchEngaged = true;
     public void DisarmLive() { State.LiveArmed = false; State.LiveArmedUntilUtc = null; }
+}
+
+public class InMemoryOrderJournal : IOrderJournal
+{
+    private readonly List<OrderJournalEntry> _entries = new();
+    public Task<OrderJournalEntry> CreateAsync(OrderJournalEntry entry, CancellationToken ct) { _entries.Add(entry); return Task.FromResult(entry); }
+    public Task UpdateAsync(OrderJournalEntry entry, CancellationToken ct)
+    {
+        var idx = _entries.FindIndex(e => e.CommandId == entry.CommandId);
+        if (idx >= 0) _entries[idx] = entry;
+        return Task.CompletedTask;
+    }
+    public Task<OrderJournalEntry?> GetAsync(string commandId, CancellationToken ct) => Task.FromResult(_entries.FirstOrDefault(e => e.CommandId == commandId));
+    public Task<OrderJournalEntry?> FindByIntentAsync(string intentId, CancellationToken ct) => Task.FromResult(_entries.FirstOrDefault(e => e.IntentId == intentId));
+    public Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct) => Task.FromResult<IReadOnlyList<OrderJournalEntry>>(_entries.Where(e => e.Environment == env && e.AccountId == accountId && e.State == OrderState.Unknown).ToList());
 }
 
 public class InMemoryAuditLogger : IAuditLogger

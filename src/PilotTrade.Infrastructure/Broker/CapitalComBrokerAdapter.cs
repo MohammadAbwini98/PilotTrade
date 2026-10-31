@@ -19,6 +19,8 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
     private readonly IIdGenerator _ids;
     private BrokerSession? _session;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
+    private readonly SemaphoreSlim _rateLimiter = new(10, 10);
+    private DateTimeOffset _lastRequestUtc = DateTimeOffset.MinValue;
 
     public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory httpFactory, IClock clock, IIdGenerator ids)
     {
@@ -43,6 +45,20 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
     }
 
     public TradingEnvironment Environment => _config.Environment;
+
+    private async Task ThrottleAsync(CancellationToken ct)
+    {
+        await _rateLimiter.WaitAsync(ct);
+        try
+        {
+            var now = _clock.UtcNow;
+            var elapsed = now - _lastRequestUtc;
+            if (elapsed < TimeSpan.FromMilliseconds(100))
+                await Task.Delay(TimeSpan.FromMilliseconds(100) - elapsed, ct);
+            _lastRequestUtc = _clock.UtcNow;
+        }
+        finally { _rateLimiter.Release(); }
+    }
 
     private async Task<BrokerSession> EnsureSessionAsync(CancellationToken ct)
     {
@@ -135,26 +151,126 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
         return new InstrumentMetadata(epic, name, epic, InstrumentAssetClass.Unknown, MarketStatus.Unknown, "USD", null, 2, 0.01m, 0.01m, 1000m, 0.01m, null, null, null, null, true, true, true, Array.Empty<string>(), _clock.UtcNow, accountId, _config.Environment);
     }
 
-    public Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct)
-        => Task.FromResult<IReadOnlyList<Candle>>(Array.Empty<Candle>()); // verify endpoint
+    public async Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct)
+    {
+        await ThrottleAsync(ct);
+        var s = await EnsureSessionAsync(ct);
+        var http = ClientWithSession(s);
+        var resolution = timeframe switch { "1m" => "MINUTE", "5m" => "MINUTE_5", "15m" => "MINUTE_15", "1h" => "HOUR", "4h" => "HOUR_4", "1d" => "DAY", _ => "MINUTE_5" };
+        var resp = await http.GetAsync($"/api/v1/prices/{Uri.EscapeDataString(epic)}?resolution={resolution}&max={count}", ct);
+        if (!resp.IsSuccessStatusCode) return Array.Empty<Candle>();
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        var list = new List<Candle>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("prices", out var prices))
+            {
+                foreach (var p in prices.EnumerateArray())
+                {
+                    var ot = p.TryGetProperty("snapshotTimeUTC", out var st) ? DateTimeOffset.Parse(st.GetString()!) : DateTimeOffset.UtcNow;
+                    list.Add(new Candle(epic, timeframe, ot, ot, true,
+                        p.TryGetProperty("openPrice", out var o) && o.TryGetProperty("bid", out var ob) ? ob.GetDecimal() : 0m,
+                        p.TryGetProperty("highPrice", out var h) && h.TryGetProperty("bid", out var hb) ? hb.GetDecimal() : 0m,
+                        p.TryGetProperty("lowPrice", out var l) && l.TryGetProperty("bid", out var lb) ? lb.GetDecimal() : 0m,
+                        p.TryGetProperty("closePrice", out var c) && c.TryGetProperty("bid", out var cb) ? cb.GetDecimal() : 0m,
+                        p.TryGetProperty("lastTradedVolume", out var v) ? v.GetDecimal() : null));
+                }
+            }
+        }
+        catch { /* malformed -> empty, fail closed */ }
+        return list;
+    }
 
     public async Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct)
     {
+        await ThrottleAsync(ct);
         var s = await EnsureSessionAsync(ct);
         var http = ClientWithSession(s);
         var resp = await http.GetAsync("/api/v1/positions", ct);
         if (!resp.IsSuccessStatusCode) return Array.Empty<Position>();
-        return Array.Empty<Position>(); // parse per verified schema
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        var list = new List<Position>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("positions", out var positions))
+            {
+                foreach (var p in positions.EnumerateArray())
+                {
+                    var epic = p.TryGetProperty("market", out var m) && m.TryGetProperty("epic", out var e) ? e.GetString() ?? "" : "";
+                    var dealId = p.TryGetProperty("position", out var pos) && pos.TryGetProperty("dealId", out var d) ? d.GetString() ?? "" : "";
+                    var direction = p.TryGetProperty("position", out var pos2) && pos2.TryGetProperty("direction", out var dir) && dir.GetString() == "SELL" ? OrderSide.Sell : OrderSide.Buy;
+                    var size = p.TryGetProperty("position", out var pos3) && pos3.TryGetProperty("size", out var sz) ? sz.GetDecimal() : 0m;
+                    list.Add(new Position(dealId, accountId, _config.Environment, epic, direction, size, null, null, null, null, null, _clock.UtcNow, _clock.UtcNow));
+                }
+            }
+        }
+        catch { }
+        return list;
     }
 
     public Task<IReadOnlyList<WorkingOrder>> GetWorkingOrdersAsync(string accountId, CancellationToken ct)
         => Task.FromResult<IReadOnlyList<WorkingOrder>>(Array.Empty<WorkingOrder>());
 
-    public Task<BrokerSubmissionResult> SubmitOrderAsync(OrderIntent intent, CancellationToken ct)
-        => Task.FromResult(new BrokerSubmissionResult(intent.IntentId, null, null, OrderState.Rejected, "Capital.com adapter not verified for submit", _clock.UtcNow, null));
+    public async Task<BrokerSubmissionResult> SubmitOrderAsync(OrderIntent intent, CancellationToken ct)
+    {
+        await ThrottleAsync(ct);
+        var s = await EnsureSessionAsync(ct);
+        var http = ClientWithSession(s);
+        var body = JsonSerializer.Serialize(new
+        {
+            epic = intent.Epic,
+            direction = intent.Side == OrderSide.Buy ? "BUY" : "SELL",
+            size = intent.Size,
+            guaranteedStop = false,
+            stopLevel = intent.StopLevel,
+            profitLevel = intent.TakeProfitLevel
+        });
+        var resp = await http.PostAsync("/api/v1/positions", new StringContent(body, Encoding.UTF8, "application/json"), ct);
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            return new BrokerSubmissionResult(intent.IntentId, null, null, OrderState.Rejected, $"HTTP {(int)resp.StatusCode}: {json}", _clock.UtcNow, null);
+        }
+        string? dealRef = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("dealReference", out var dr)) dealRef = dr.GetString();
+        }
+        catch { }
+        return new BrokerSubmissionResult(intent.IntentId, dealRef, null, OrderState.BrokerPending, null, _clock.UtcNow, null);
+    }
 
-    public Task<BrokerSubmissionResult?> GetConfirmationAsync(string brokerDealReference, CancellationToken ct)
-        => Task.FromResult<BrokerSubmissionResult?>(null);
+    public async Task<BrokerSubmissionResult?> GetConfirmationAsync(string brokerDealReference, CancellationToken ct)
+    {
+        await ThrottleAsync(ct);
+        var s = await EnsureSessionAsync(ct);
+        var http = ClientWithSession(s);
+        var resp = await http.GetAsync($"/api/v1/confirms/{Uri.EscapeDataString(brokerDealReference)}", ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var dealStatus = doc.RootElement.TryGetProperty("dealStatus", out var ds) ? ds.GetString() : null;
+            var state = dealStatus switch
+            {
+                "ACCEPTED" => OrderState.Confirmed,
+                "REJECTED" => OrderState.Rejected,
+                _ => OrderState.BrokerPending
+            };
+            string? dealId = null;
+            if (doc.RootElement.TryGetProperty("affectedDeals", out var ad) && ad.ValueKind == JsonValueKind.Array && ad.GetArrayLength() > 0)
+            {
+                dealId = ad[0].TryGetProperty("dealId", out var di) ? di.GetString() : null;
+            }
+            var reason = doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : null;
+            return new BrokerSubmissionResult("", brokerDealReference, dealId, state, reason, _clock.UtcNow, state == OrderState.Confirmed ? _clock.UtcNow : null);
+        }
+        catch { return null; }
+    }
 
     public Task<bool> CancelOrderAsync(string orderId, string accountId, CancellationToken ct) => Task.FromResult(false);
     public Task<bool> ClosePositionAsync(string positionId, decimal? size, CancellationToken ct) => Task.FromResult(false);

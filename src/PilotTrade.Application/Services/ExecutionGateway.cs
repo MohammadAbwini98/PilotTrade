@@ -12,13 +12,14 @@ public sealed class ExecutionGateway : IExecutionGateway
     private readonly IBrokerAdapter _broker;
     private readonly ITradingControl _control;
     private readonly IAuditLogger _audit;
+    private readonly IOrderJournal _journal;
     private readonly IClock _clock;
     private readonly IIdGenerator _ids;
     private readonly HashSet<string> _submittedIntents = new();
     private readonly object _lock = new();
 
-    public ExecutionGateway(IBrokerAdapter broker, ITradingControl control, IAuditLogger audit, IClock clock, IIdGenerator ids)
-    { _broker = broker; _control = control; _audit = audit; _clock = clock; _ids = ids; }
+    public ExecutionGateway(IBrokerAdapter broker, ITradingControl control, IAuditLogger audit, IOrderJournal journal, IClock clock, IIdGenerator ids)
+    { _broker = broker; _control = control; _audit = audit; _journal = journal; _clock = clock; _ids = ids; }
 
     public async Task<ExecutionResult> ExecuteAsync(ExecutionRequest request, CancellationToken ct)
     {
@@ -28,6 +29,8 @@ public sealed class ExecutionGateway : IExecutionGateway
         // Kill switch
         if (_control.State.KillSwitchEngaged)
             return Reject(intent.IntentId, "Kill switch engaged", now);
+        if (!_control.State.ReconciliationComplete)
+            return Reject(intent.IntentId, "Startup reconciliation incomplete", now);
 
         // Environment/mode checks
         if (request.Intent.Environment != _broker.Environment)
@@ -49,21 +52,44 @@ public sealed class ExecutionGateway : IExecutionGateway
         if (request.Risk.Decision != RiskDecision.Approved)
             return Reject(intent.IntentId, $"Risk rejected: {string.Join(";", request.Risk.Reasons)}", now);
 
-        // Idempotency
-        lock (_lock) { if (_submittedIntents.Contains(intent.IntentId)) return new ExecutionResult(intent.IntentId, OrderState.Confirmed, null, null, "Duplicate intent suppressed", now); }
+        // Idempotency: if already journaled/submitted, return existing
+        var existing = await _journal.FindByIntentAsync(intent.IntentId, ct);
+        if (existing is not null)
+        {
+            return new ExecutionResult(intent.IntentId, existing.State, existing.BrokerDealReference, existing.BrokerDealId, existing.RejectionReason ?? "Duplicate intent suppressed", _clock.UtcNow);
+        }
+
+        var commandId = _ids.NewId("cmd");
+        var digest = intent.IntentId; // simplified digest
+        var entry = new OrderJournalEntry(commandId, intent.IntentId, _broker.Environment, intent.AccountId, intent.Epic,
+            OrderState.Proposed, digest, intent.SnapshotId, null, null, null, now, null, null, null, now, intent.IntentId);
+        await _journal.CreateAsync(entry, ct);
 
         // Submit
         try
         {
+            entry = entry with { State = OrderState.Submitting, UpdatedUtc = _clock.UtcNow, SubmittedUtc = _clock.UtcNow };
+            await _journal.UpdateAsync(entry, ct);
             lock (_lock) _submittedIntents.Add(intent.IntentId);
             var result = await _broker.SubmitOrderAsync(intent, ct);
-            // If unknown/ambiguous, do not retry
+            var finalState = result.State;
+            entry = entry with
+            {
+                State = finalState,
+                BrokerDealReference = result.BrokerDealReference,
+                BrokerDealId = result.BrokerDealId,
+                RejectionReason = result.RejectionReason,
+                ConfirmedUtc = result.ConfirmedUtc,
+                UpdatedUtc = _clock.UtcNow
+            };
+            await _journal.UpdateAsync(entry, ct);
             await _audit.LogAsync(new AuditEvent(_ids.NewId("audit"), now, "Execution", "Submit", "system", _broker.Environment.ToString().ToLowerInvariant(), intent.AccountId, intent.Epic, intent.IntentId, JsonSerializer.Serialize(result), true), ct);
-            return new ExecutionResult(intent.IntentId, result.State, result.BrokerDealReference, result.BrokerDealId, result.RejectionReason, _clock.UtcNow);
+            return new ExecutionResult(intent.IntentId, finalState, result.BrokerDealReference, result.BrokerDealId, result.RejectionReason, _clock.UtcNow);
         }
         catch (Exception ex)
         {
-            // Unknown state: do not retry; mark unknown
+            entry = entry with { State = OrderState.Unknown, RejectionReason = ex.Message, UpdatedUtc = _clock.UtcNow };
+            await _journal.UpdateAsync(entry, ct);
             return new ExecutionResult(intent.IntentId, OrderState.Unknown, null, null, ex.Message, _clock.UtcNow);
         }
     }

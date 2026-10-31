@@ -8,6 +8,7 @@ public sealed class TradingControlState
     public bool LiveArmed { get; set; }
     public DateTimeOffset? LiveArmedUntilUtc { get; set; }
     public string? SuspensionReason { get; set; }
+    public bool ReconciliationComplete { get; set; }
     public TradingMode Mode { get; set; } = TradingMode.MonitorOnly;
 }
 

@@ -121,6 +121,27 @@ public class JevEvaluationEntity
     public DateTimeOffset ProducedUtc { get; set; }
 }
 
+public class OrderJournalEntity
+{
+    public string CommandId { get; set; } = "";
+    public string IntentId { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string Epic { get; set; } = "";
+    public string State { get; set; } = "";
+    public string RequestDigest { get; set; } = "";
+    public string? DecisionSnapshotId { get; set; }
+    public string? RiskAuthorizationJson { get; set; }
+    public string? BrokerDealReference { get; set; }
+    public string? BrokerDealId { get; set; }
+    public DateTimeOffset CreatedUtc { get; set; }
+    public DateTimeOffset? SubmittedUtc { get; set; }
+    public DateTimeOffset? ConfirmedUtc { get; set; }
+    public string? RejectionReason { get; set; }
+    public DateTimeOffset UpdatedUtc { get; set; }
+    public string? CorrelationId { get; set; }
+}
+
 public class ExecutionStateEntity
 {
     public string Id { get; set; } = "";
