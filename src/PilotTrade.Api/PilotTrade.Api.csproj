@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PilotTrade.Domain\PilotTrade.Domain.csproj" />
+    <ProjectReference Include="..\PilotTrade.Application\PilotTrade.Application.csproj" />
+    <ProjectReference Include="..\PilotTrade.Infrastructure\PilotTrade.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

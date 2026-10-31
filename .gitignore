@@ -1,0 +1,11 @@
+bin/
+obj/
+node_modules/
+*.db
+release/
+.env
+run*.txt
+build.txt
+pub.txt
+test.txt
+finaltest.txt

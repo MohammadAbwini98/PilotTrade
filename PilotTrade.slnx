@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PilotTrade.Api/PilotTrade.Api.csproj" />
+    <Project Path="src/PilotTrade.Application/PilotTrade.Application.csproj" />
+    <Project Path="src/PilotTrade.Domain/PilotTrade.Domain.csproj" />
+    <Project Path="src/PilotTrade.Infrastructure/PilotTrade.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PilotTrade.IntegrationTests/PilotTrade.IntegrationTests.csproj" />
+    <Project Path="tests/PilotTrade.UnitTests/PilotTrade.UnitTests.csproj" />
+  </Folder>
+</Solution>
