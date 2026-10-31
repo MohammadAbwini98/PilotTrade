@@ -266,6 +266,9 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
         return CapitalComJson.Str(doc.RootElement, "accountId");
     }
 
+    // What the broker itself reports as active, for evidence that does not rest on the account the caller passed in.
+    public Task<string> GetActiveAccountAsync(CancellationToken ct) => ReadActiveAccountAsync(ct);
+
     public async Task<BrokerSession> CreateSessionAsync(CancellationToken ct) => await EnsureSessionAsync(ct);
 
     public async Task<IReadOnlyList<BrokerAccountSummary>> GetAccountsAsync(CancellationToken ct)

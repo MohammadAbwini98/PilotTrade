@@ -14,12 +14,15 @@ public sealed record DemoProbeEvidence(
     string ApiHost,
     string? BuildVersion,
     string AccountIdMasked,
+    string AccountSource,
+    string RequestedEpic,
     bool OrderEndpointsCalled,
     bool AllPassed,
     IReadOnlyList<DemoProbeStep> Steps);
 
 // Exercises the read-only gate with real requests and records sanitized results only:
-// presence, counts, ages and field names, never balances, prices, tokens, full account IDs or broker bodies.
+// presence, counts, ages, field names and the public instrument name, never balances, prices, tokens, full account IDs or broker bodies.
+// A mismatched account or epic is refused inside the adapter, so a step only reports what the broker's answer can contradict.
 public sealed class DemoReadOnlyProbe
 {
     private const string CandleTimeframe = "5m";
@@ -60,22 +63,30 @@ public sealed class DemoReadOnlyProbe
 
         var accounts = await Step("accounts", () => _broker.GetAccountsAsync(ct), a => (a.Count > 0, $"{a.Count} account(s)"));
         var target = accountId;
-        if (string.IsNullOrWhiteSpace(target)) target = accounts?.FirstOrDefault(a => a.Preferred)?.AccountId ?? accounts?.FirstOrDefault()?.AccountId;
+        var accountSource = "configured";
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            target = accounts?.FirstOrDefault(a => a.Preferred)?.AccountId ?? accounts?.FirstOrDefault()?.AccountId;
+            accountSource = string.IsNullOrWhiteSpace(target) ? "none" : "autoSelected";
+        }
 
         var status = MarketStatus.Unknown;
         if (!string.IsNullOrWhiteSpace(target))
         {
             await Step("accountIdentityAndFinancials", () => _broker.GetAccountAsync(target, ct), a =>
-                (a.AccountId == target && a.FreeMargin is not null,
-                 $"accountMatched={a.AccountId == target}; currencyPresent={a.Currency.Length > 0}; availablePresent={a.FreeMargin is not null}; equityProven={a.Equity is not null}; marginUsedPresent={a.MarginUsed is not null}; realizedPnLPresent={a.RealizedPnLToday is not null}"));
+                (a.FreeMargin is not null,
+                 $"currencyPresent={a.Currency.Length > 0}; availablePresent={a.FreeMargin is not null}; equityProven={a.Equity is not null}; marginUsedPresent={a.MarginUsed is not null}; realizedPnLPresent={a.RealizedPnLToday is not null}"));
+            if (_broker is CapitalComBrokerAdapter capital)
+                await Step("activeSessionAccount", () => capital.GetActiveAccountAsync(ct), active => (active == target, $"activeAccountMatched={active == target}"));
+            else steps.Add(new DemoProbeStep("activeSessionAccount", false, "Not measured"));
             await Step("instrumentMetadata",
                 async () => await _broker.GetInstrumentAsync(epic, target, ct) ?? throw new BrokerException(BrokerErrorKind.NotFound, "Instrument not found"),
                 m =>
                 {
                     status = m.Status;
                     var rulesValid = m.MinDealSize > 0 && m.MaxDealSize >= m.MinDealSize && m.DealSizeStep > 0 && m.TickSize > 0 && m.MinStopDistance is not null && m.MaxStopDistance is not null;
-                    return (m.Epic == epic && m.Status != MarketStatus.Unknown && m.QuoteCurrency.Length > 0 && rulesValid,
-                        $"epicMatched={m.Epic == epic}; assetClass={m.AssetClass}; status={m.Status}; precision={m.PricePrecision}; currencyPresent={m.QuoteCurrency.Length > 0}; dealingRulesValid={rulesValid}");
+                    return (m.Status != MarketStatus.Unknown && m.QuoteCurrency.Length > 0 && rulesValid,
+                        $"instrumentName={m.Name}; assetClass={m.AssetClass}; status={m.Status}; precision={m.PricePrecision}; currencyPresent={m.QuoteCurrency.Length > 0}; dealingRulesValid={rulesValid}");
                 });
             await Step("positions", () => _broker.GetPositionsAsync(target, ct), p => (true, $"{p.Count} position(s)"));
             await Step("workingOrders", () => _broker.GetWorkingOrdersAsync(target, ct), o => (true, $"{o.Count} working order(s)"));
@@ -91,7 +102,7 @@ public sealed class DemoReadOnlyProbe
         return new DemoProbeEvidence(now, _broker.Environment.ToString(), _broker.GetType().Name,
             (_broker as CapitalComBrokerAdapter)?.ApiHost ?? "(none)",
             typeof(DemoReadOnlyProbe).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-            Mask(target), (_broker as CapitalComBrokerAdapter)?.NonSessionWriteRequests > 0, steps.All(s => s.Passed), steps);
+            Mask(target), accountSource, epic, (_broker as CapitalComBrokerAdapter)?.NonSessionWriteRequests > 0, steps.All(s => s.Passed), steps);
     }
 
     private static string FailureDetail(BrokerException ex) =>

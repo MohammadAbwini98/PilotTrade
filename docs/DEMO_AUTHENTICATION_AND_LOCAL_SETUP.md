@@ -43,6 +43,6 @@ dotnet run --project src/PilotTrade.Api -- --demo-readonly-evidence "$PWD/docs/p
 
 Before any broker request, the run checks the output path and exits with code 2 if it is unusable. Exit code 0 means every step passed, 1 means a step failed, and 3 means the file could not be written, in which case the sanitized evidence is printed instead.
 
-A closed market fails the quote and candle steps, because freshness cannot be proven then. Files named `docs/phase3/demo-readonly-evidence*.json` are ignored by git; use a different name per epic, such as `demo-readonly-evidence-gold.json`.
+A closed market fails the quote and candle steps, because freshness cannot be proven then. Check that `RequestedEpic` and `instrumentName` show the instrument you meant, and that `AccountSource` is `configured` if you set `TRADING_ACCOUNT_ID`. Files named `docs/phase3/demo-readonly-evidence*.json` are ignored by git; use a different name per epic, such as `demo-readonly-evidence-gold.json`.
 
 Review the file before sharing it. It should hold only the adapter, host and build, a masked account ID and step results. The masked ID keeps the last 4 digits.

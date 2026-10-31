@@ -753,6 +753,57 @@ public class CapitalComContractTests
     }
 
     [Fact]
+    public async Task Probe_RecordsTheEpicAndTheBrokersInstrumentName()
+    {
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "GOLD", CancellationToken.None);
+        evidence.RequestedEpic.Should().Be("GOLD");
+        evidence.Steps.Single(s => s.Name == "instrumentMetadata").Detail.Should().Contain("instrumentName=GOLD name");
+    }
+
+    [Fact]
+    public async Task Probe_BrokerAnswersForAnotherEpic_FailsTheMetadataStep()
+    {
+        _fake.MarketDetails["EURUSD"] = CapitalFake.MarketDetail("GOLD");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var step = evidence.Steps.Single(s => s.Name == "instrumentMetadata");
+        step.Passed.Should().BeFalse();
+        step.Detail.Should().Be("MalformedResponse: instrument.epic");
+    }
+
+    [Fact]
+    public async Task Probe_ActiveAccountComesFromTheBroker_AndAMismatchFails()
+    {
+        // The account read proves the session first; the probe's own read then gets a different answer.
+        _fake.Script("GET /api/v1/session", () => null, () => CapitalFake.Json(HttpStatusCode.OK, "{\"accountId\":\"ACC-OTHER\"}"));
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var step = evidence.Steps.Single(s => s.Name == "activeSessionAccount");
+        step.Passed.Should().BeFalse();
+        step.Detail.Should().Be("activeAccountMatched=False");
+        evidence.AllPassed.Should().BeFalse();
+        JsonSerializer.Serialize(evidence).Should().NotContain("ACC-OTHER");
+    }
+
+    [Theory]
+    [InlineData("ACC-A", "configured")]
+    [InlineData(null, "autoSelected")]
+    [InlineData(" ", "autoSelected")]
+    public async Task Probe_RecordsWhereTheAccountCameFrom(string? configured, string expected)
+    {
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync(configured, "EURUSD", CancellationToken.None);
+        evidence.AccountSource.Should().Be(expected);
+        evidence.Steps.Single(s => s.Name == "activeSessionAccount").Passed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Probe_NoAccountAvailable_RecordsNoSource()
+    {
+        _fake.AccountsJson = "{\"accounts\":[]}";
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync(null, "EURUSD", CancellationToken.None);
+        evidence.AccountSource.Should().Be("none");
+        evidence.AllPassed.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Probe_NamesTheMalformedField_WithoutItsValue()
     {
         _fake.MarketsJson = "{\"markets\":[{\"epic\":\"EURUSD\",\"bid\":1234.5}]}";
