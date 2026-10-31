@@ -272,7 +272,7 @@ public sealed class DemoApiFlowTests : IDisposable
     public async Task StaleFeed_IsNoTrade()
     {
         await _host.StoreDemoCredentialsAsync();
-        _host.Capital.MarketsJson = "{\"markets\":[{\"epic\":\"EURUSD\",\"bid\":1.1,\"offer\":1.1002,\"updateTimeUTC\":\"2020-01-01T00:00:00\",\"delayTime\":0}]}";
+        _host.Capital.MarketsJson = "{\"marketDetails\":[" + CapitalFake.QuoteDetail("EURUSD", "{\"bid\":1.1,\"offer\":1.1002,\"updateTime\":\"2020-01-01T00:00:00\",\"delayTime\":0}") + "]}";
         var client = await _host.OwnerClientAsync();
         var version = await SelectAsync(client, "EURUSD");
         var result = await SnapshotAsync(client, "EURUSD", version);

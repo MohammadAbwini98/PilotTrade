@@ -29,6 +29,9 @@ public sealed class CapitalFake : HttpMessageHandler
     public string SessionBody { get; set; } = "";
     public Dictionary<string, string> MarketDetails { get; } = new() { ["EURUSD"] = MarketDetail("EURUSD"), ["GOLD"] = MarketDetail("GOLD", currency: "EUR") };
     public string MarketsJson { get; set; } = "";
+    public string SessionDetailsJson { get; set; } = "";
+    public int TimezoneOffset { get; set; } = 3; // the documented GET /session sample
+    public string QuoteStatus { get; set; } = "TRADEABLE";
     public string PricesJson { get; set; } = "";
     public Dictionary<string, string> Positions { get; } = new() { ["ACC-A"] = PositionsFor("EURUSD"), ["ACC-B"] = PositionsFor("GOLD") };
     public Dictionary<string, string> WorkingOrders { get; } = new() { ["ACC-A"] = "{\"workingOrders\":[]}", ["ACC-B"] = WorkingOrdersFor("GOLD") };
@@ -96,7 +99,7 @@ public sealed class CapitalFake : HttpMessageHandler
         switch (key)
         {
             case "GET /api/v1/session":
-                return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { clientId = "c", accountId = ActiveAccount, timezoneOffset = 0, locale = "en", currency = "USD" }));
+                return Json(HttpStatusCode.OK, SessionDetailsJson.Length > 0 ? SessionDetailsJson : JsonSerializer.Serialize(new { clientId = "c", accountId = ActiveAccount, timezoneOffset = TimezoneOffset, locale = "en", currency = "USD" }));
             case "PUT /api/v1/session":
                 var target = JsonDocument.Parse(body!).RootElement.GetProperty("accountId").GetString()!;
                 if (!AccountsJson.Contains($"\"{target}\"") || target == ActiveAccount) return Json(HttpStatusCode.BadRequest, "{\"errorCode\":\"error.not-different.accountId\"}");
@@ -105,7 +108,7 @@ public sealed class CapitalFake : HttpMessageHandler
             case "GET /api/v1/accounts":
                 return Json(HttpStatusCode.OK, AccountsJson);
             case "GET /api/v1/markets":
-                return Json(HttpStatusCode.OK, MarketsJson.Length > 0 ? MarketsJson : DefaultMarkets());
+                return Json(HttpStatusCode.OK, MarketsJson.Length > 0 ? MarketsJson : DefaultMarkets(uri));
             case "GET /api/v1/positions":
                 return Json(HttpStatusCode.OK, Positions[ActiveAccount]);
             case "GET /api/v1/workingorders":
@@ -119,8 +122,18 @@ public sealed class CapitalFake : HttpMessageHandler
         return Json(HttpStatusCode.NotFound, "{\"errorCode\":\"error.not-found\"}");
     }
 
-    private string DefaultMarkets() =>
-        $$"""{"markets":[{"epic":"EURUSD","symbol":"EURUSD","instrumentName":"EUR/USD","instrumentType":"CURRENCIES","marketStatus":"TRADEABLE","marketModes":["REGULAR"],"bid":1.1,"offer":1.1002,"updateTimeUTC":"{{_clock.UtcNow.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}}","delayTime":0}]}""";
+    // The two documented response shapes: searchTerm answers with markets, epics with marketDetails.
+    private string DefaultMarkets(Uri uri)
+    {
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        if (query["searchTerm"] is not null)
+            return $$"""{"markets":[{"epic":"EURUSD","symbol":"EURUSD","instrumentName":"EUR/USD","instrumentType":"CURRENCIES","marketStatus":"TRADEABLE","marketModes":["REGULAR"],"bid":1.1,"offer":1.1002,"updateTimeUTC":"{{_clock.UtcNow.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}}","delayTime":0}]}""";
+        var local = _clock.UtcNow.UtcDateTime.AddHours(TimezoneOffset);
+        var details = (query["epics"] ?? "").Split(',').Where(MarketDetails.ContainsKey).Select(epic => QuoteDetail(epic, $$"""{"marketStatus":"{{QuoteStatus}}","marketModes":["REGULAR"],"bid":1.1,"offer":1.1002,"updateTime":"{{local:yyyy-MM-ddTHH:mm:ss.fff}}","delayTime":0}"""));
+        return $$"""{"marketDetails":[{{string.Join(",", details)}}]}""";
+    }
+
+    public static string QuoteDetail(string epic, string snapshot) => $$"""{"instrument":{"epic":"{{epic}}"},"dealingRules":{},"snapshot":{{snapshot}}}""";
 
     private string DefaultPrices(TimeSpan bar)
     {

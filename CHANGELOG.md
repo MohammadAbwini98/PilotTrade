@@ -2,7 +2,9 @@
 
 ## Unreleased (2026-10-31)
 - Capital.com Demo read-only hardening: explicit broker modes, account proof, real instrument metadata, market data validation, macOS keychain store, owner authorization, strict Origin and CSRF, patched Microsoft.OpenApi, expanded tests and CI.
-- Demo execution stays disabled and Live stays locked. Not yet validated against the real Demo API.
+- Fixed quote parsing: `GET /markets?epics=` answers with `marketDetails`, not `markets`. Found by the owner's real Demo run; the fix has not run against the real API yet.
+- Stricter read-only probe: records the adapter, host and build, measures order-endpoint use, and cannot pass freshness on a closed market. The output path is checked before any broker request.
+- Demo execution stays disabled and Live stays locked. Not validated against the real Demo API: the one recorded run failed its quote step.
 
 ## 0.1.0 (2026-10-31)
 - Initial implementation: domain, broker adapter (simulator + Capital.com skeleton), market data, risk engine, decision coordinator, execution gateway, audit, API, React dashboard, tests, docs.

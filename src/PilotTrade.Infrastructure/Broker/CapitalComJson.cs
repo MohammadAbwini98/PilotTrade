@@ -9,8 +9,10 @@ using PilotTrade.Domain.Broker;
 // Exceptions name the field only, so broker values cannot reach logs or API responses.
 internal static class CapitalComJson
 {
+    public const string MalformedPrefix = "Broker response is malformed: ";
+
     public static BrokerException Malformed(string field) =>
-        new(BrokerErrorKind.MalformedResponse, $"Broker response is malformed: {field}");
+        new(BrokerErrorKind.MalformedResponse, MalformedPrefix + field);
 
     public static JsonDocument Parse(string json)
     {

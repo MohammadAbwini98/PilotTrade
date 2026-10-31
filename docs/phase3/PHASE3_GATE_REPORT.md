@@ -3,8 +3,8 @@
 Date: 2026-10-31. Details: `CAPITAL_DEMO_READONLY_HARDENING_REPORT.md`.
 
 ## Gate A — Contract completeness: PASS against documentation and mocks only
-## Gate B — Authenticated Demo read-only: NO EVIDENCE
-The owner's first run crashed on its output path after the probe, so no results were recorded. The run must be repeated.
+## Gate B — Authenticated Demo read-only: FAILED
+The owner's run on `c3adf2d` (2026-10-31, 18:38 UTC, market closed) passed 6 of 7 steps. The quote step failed on an adapter bug, since fixed but not yet run against the real API. Criterion status: `docs/DEMO_RELEASE_GO_NO_GO.md`.
 ## Gate C — Verified Demo order: BLOCKED
 Execution is disabled, and needs Gate B and separate authorization.
 ## Gate D — Autonomous Demo: BLOCKED

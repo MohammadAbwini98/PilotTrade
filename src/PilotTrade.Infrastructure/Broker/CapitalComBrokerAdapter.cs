@@ -41,6 +41,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
     private readonly RateGate _sessionGate;
     private BrokerSession? _session;
     private long _sessionGeneration;
+    private int _nonSessionWrites;
 
     public CapitalComBrokerAdapter(BrokerEnvironmentConfig config, ISecretStore secrets, IHttpClientFactory httpFactory, IClock clock, IIdGenerator ids, Func<TimeSpan, CancellationToken, Task>? delay = null)
         : this(config, secrets, httpFactory, null, clock, ids, delay) { }
@@ -62,6 +63,8 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
 
     public TradingEnvironment Environment => _config.Environment;
     public bool ExecutionEnabled => false;
+    public string ApiHost => new Uri(_config.ApiBaseUri).Host;
+    public int NonSessionWriteRequests => Volatile.Read(ref _nonSessionWrites);
 
     private HttpClient Http() => _httpClient ?? _httpFactory!.CreateClient("capital");
     private Uri Url(string pathAndQuery) => new(new Uri(_config.ApiBaseUri), pathAndQuery);
@@ -177,6 +180,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
     // Only GET and PUT /session come through here, and both are safe to repeat. Order submission never does.
     private async Task<string> SendAsync(HttpMethod method, string pathAndQuery, string? jsonBody, CancellationToken ct)
     {
+        if (method != HttpMethod.Get && !pathAndQuery.StartsWith("/api/v1/session", StringComparison.Ordinal)) Interlocked.Increment(ref _nonSessionWrites);
         var reauthenticated = false;
         for (var attempt = 0; ; attempt++)
         {
@@ -363,24 +367,46 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
         return result;
     }
 
+    // An epics query answers with marketDetails (only searchTerm answers with markets).
     public async Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IEnumerable<string> epics, CancellationToken ct)
     {
         var quotes = new List<MarketQuote>();
+        decimal? timezoneOffset = null;
         foreach (var batch in epics.Distinct().Chunk(50)) // GET /markets accepts at most 50 epics
         {
             var query = Uri.EscapeDataString(string.Join(",", batch));
             using var doc = CapitalComJson.Parse(await GetAsync($"/api/v1/markets?epics={query}", ct));
-            foreach (var m in CapitalComJson.Arr(doc.RootElement, "markets").EnumerateArray())
+            foreach (var m in CapitalComJson.Arr(doc.RootElement, "marketDetails").EnumerateArray())
             {
-                var bid = CapitalComJson.Positive(m, "bid");
-                var offer = CapitalComJson.Positive(m, "offer");
+                var epic = CapitalComJson.Str(CapitalComJson.Obj(m, "instrument"), "epic");
+                if (!batch.Contains(epic)) throw CapitalComJson.Malformed("instrument.epic");
+                var snapshot = CapitalComJson.Obj(m, "snapshot");
+                var bid = CapitalComJson.Positive(snapshot, "bid");
+                var offer = CapitalComJson.Positive(snapshot, "offer");
                 if (offer < bid) throw CapitalComJson.Malformed("crossed quote");
-                var delayed = CapitalComJson.OptDec(m, "delayTime") is > 0;
-                quotes.Add(new MarketQuote(CapitalComJson.Str(m, "epic"), bid, offer, (bid + offer) / 2m, offer - bid,
-                    CapitalComJson.Utc(m, "updateTimeUTC"), _clock.UtcNow, delayed ? FeedHealth.Stale : FeedHealth.Healthy));
+                var delayed = CapitalComJson.OptDec(snapshot, "delayTime") is > 0;
+
+                // The documented snapshot has no UTC field. updateTime is session-local, as the documented pairs of
+                // updateTime and updateTimeUTC elsewhere show, so it is converted with the session's own offset.
+                DateTimeOffset updated;
+                if (snapshot.TryGetProperty("updateTimeUTC", out _)) updated = CapitalComJson.Utc(snapshot, "updateTimeUTC");
+                else
+                {
+                    timezoneOffset ??= await ReadTimezoneOffsetAsync(ct);
+                    updated = CapitalComJson.Utc(snapshot, "updateTime") - TimeSpan.FromHours((double)timezoneOffset.Value);
+                }
+                quotes.Add(new MarketQuote(epic, bid, offer, (bid + offer) / 2m, offer - bid,
+                    updated, _clock.UtcNow, delayed ? FeedHealth.Stale : FeedHealth.Healthy));
             }
         }
         return quotes;
+    }
+
+    private async Task<decimal> ReadTimezoneOffsetAsync(CancellationToken ct)
+    {
+        using var doc = CapitalComJson.Parse(await GetAsync("/api/v1/session", ct));
+        var hours = CapitalComJson.Dec(doc.RootElement, "timezoneOffset");
+        return Math.Abs(hours) <= 14m ? hours : throw CapitalComJson.Malformed("timezoneOffset");
     }
 
     public async Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct)

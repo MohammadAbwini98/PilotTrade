@@ -7,7 +7,7 @@ Modules: Domain, Application, Infrastructure, Api, Web. SQLite persistence. Loop
 - `BrokerRuntimeOptions` parses explicit configuration. Simulation is the default, Capital.com Demo needs `BROKER_MODE=capital_demo` and an account, and Live stops startup.
 - `BrokerAdapterFactory` creates `SimulatedBrokerAdapter` or `CapitalComBrokerAdapter`.
 - `CapitalComBrokerAdapter` proves the active account before account-scoped reads, sends session tokens per request, applies rate limits, and retries only safe reads. Typed `BrokerErrors` separate a failure from genuinely empty data.
-- `DemoReadOnlyProbe` produces sanitized evidence and uses no order endpoint.
+- `DemoReadOnlyProbe` produces sanitized evidence and reports the adapter's measured count of order-endpoint use. `DemoEvidenceRunner` checks the output path before creating the adapter.
 
 ## Decisions and execution
 

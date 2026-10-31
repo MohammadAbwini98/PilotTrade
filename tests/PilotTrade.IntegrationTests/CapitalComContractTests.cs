@@ -394,26 +394,86 @@ public class CapitalComContractTests
         var q = (await (await Adapter()).GetQuotesAsync(new[] { "EURUSD" }, CancellationToken.None)).Single();
         q.Bid.Should().Be(1.1m);
         q.Ask.Should().Be(1.1002m);
-        q.SourceTimestampUtc.Should().Be(_clock.UtcNow);
+        q.SourceTimestampUtc.Should().BeCloseTo(_clock.UtcNow, TimeSpan.FromSeconds(1)); // reading the offset waits on the rate limit
         q.Health.Should().Be(FeedHealth.Healthy);
+    }
+
+    // The response sample documented for GET /markets?epics=, time zone comes from the documented GET /session sample.
+    private const string DocumentedEpicsSample = """
+        {"marketDetails":[{
+          "instrument":{"epic":"SILVER","symbol":"SILVER","expiry":"-","name":"Silver","lotSize":1,"type":"COMMODITIES","guaranteedStopAllowed":true,"streamingPricesAvailable":true,"currency":"USD","marginFactor":10,"marginFactorUnit":"PERCENTAGE"},
+          "dealingRules":{"minDealSize":{"unit":"POINTS","value":1},"maxDealSize":{"unit":"POINTS","value":10000},"marketOrderPreference":"AVAILABLE_DEFAULT_OFF","trailingStopsPreference":"NOT_AVAILABLE"},
+          "snapshot":{"marketStatus":"TRADEABLE","netChange":-0.627,"percentageChange":-0.24,"updateTime":"2022-04-06T11:21:55.542","delayTime":0,"bid":22.046,"offer":22.066,"high":22.098,"low":21.926,"decimalPlacesFactor":3,"scalingFactor":1,"marketModes":["REGULAR"]}
+        }]}
+        """;
+
+    private static string Quote(string snapshot, string epic = "E") => "{\"marketDetails\":[" + CapitalFake.QuoteDetail(epic, snapshot) + "]}";
+
+    [Fact]
+    public async Task Quotes_ParseTheDocumentedEpicsSample_ConvertingLocalTimeWithTheSessionOffset()
+    {
+        _fake.MarketsJson = DocumentedEpicsSample;
+        var q = (await (await Adapter()).GetQuotesAsync(new[] { "SILVER" }, CancellationToken.None)).Single();
+        q.Epic.Should().Be("SILVER");
+        q.Bid.Should().Be(22.046m);
+        q.Ask.Should().Be(22.066m);
+        q.SourceTimestampUtc.Should().Be(new DateTimeOffset(2022, 4, 6, 8, 21, 55, 542, TimeSpan.Zero));
+    }
+
+    [Fact]
+    public async Task Quotes_PreferAnExplicitUtcField_WithoutReadingTheSession()
+    {
+        _fake.MarketsJson = Quote("{\"bid\":1,\"offer\":2,\"updateTime\":\"2026-10-31T15:00:00\",\"updateTimeUTC\":\"2026-10-31T12:00:00\"}");
+        var q = (await (await Adapter()).GetQuotesAsync(new[] { "E" }, CancellationToken.None)).Single();
+        q.SourceTimestampUtc.Should().Be(_clock.UtcNow);
+        _fake.Requests.Should().NotContain(r => r.Method == "GET" && r.Path == "/api/v1/session");
+    }
+
+    [Theory]
+    [InlineData("{\"clientId\":\"c\",\"accountId\":\"ACC-A\"}")]
+    [InlineData("{\"accountId\":\"ACC-A\",\"timezoneOffset\":\"3\"}")]
+    [InlineData("{\"accountId\":\"ACC-A\",\"timezoneOffset\":99}")]
+    public async Task Quotes_WithoutAProvenSessionOffset_AreRejected(string session)
+    {
+        _fake.SessionDetailsJson = session;
+        _fake.MarketsJson = Quote("{\"bid\":1,\"offer\":2,\"updateTime\":\"2026-10-31T15:00:00\"}");
+        var adapter = await Adapter();
+        (await Fails(() => adapter.GetQuotesAsync(new[] { "E" }, CancellationToken.None))).Kind.Should().Be(BrokerErrorKind.MalformedResponse);
+    }
+
+    [Fact]
+    public async Task Quotes_RefuseTheSearchShapeForAnEpicsQuery()
+    {
+        _fake.MarketsJson = "{\"markets\":[{\"epic\":\"E\",\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}]}";
+        var adapter = await Adapter();
+        (await Fails(() => adapter.GetQuotesAsync(new[] { "E" }, CancellationToken.None))).Message.Should().EndWith("marketDetails");
     }
 
     [Fact]
     public async Task DelayedQuote_IsNotHealthy()
     {
-        _fake.MarketsJson = "{\"markets\":[{\"epic\":\"E\",\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"2026-10-31T12:00:00\",\"delayTime\":15}]}";
+        _fake.MarketsJson = Quote("{\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"2026-10-31T12:00:00\",\"delayTime\":15}");
         (await (await Adapter()).GetQuotesAsync(new[] { "E" }, CancellationToken.None)).Single().Health.Should().Be(FeedHealth.Stale);
     }
 
     [Theory]
-    [InlineData("{\"markets\":[{\"epic\":\"E\",\"bid\":2,\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}]}")]
-    [InlineData("{\"markets\":[{\"epic\":\"E\",\"bid\":0,\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}]}")]
-    [InlineData("{\"markets\":[{\"epic\":\"E\",\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}]}")]
-    [InlineData("{\"markets\":[{\"epic\":\"E\",\"bid\":1,\"offer\":2}]}")]
-    [InlineData("{\"markets\":[{\"epic\":\"E\",\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"soon\"}]}")]
-    public async Task MalformedQuotes_AreRejected(string json)
+    [InlineData("{\"bid\":2,\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}")]
+    [InlineData("{\"bid\":0,\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}")]
+    [InlineData("{\"offer\":1,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}")]
+    [InlineData("{\"bid\":1,\"offer\":2}")]
+    [InlineData("{\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"soon\"}")]
+    [InlineData("{\"bid\":1,\"offer\":2,\"updateTime\":\"soon\"}")]
+    public async Task MalformedQuotes_AreRejected(string snapshot)
     {
-        _fake.MarketsJson = json;
+        _fake.MarketsJson = Quote(snapshot);
+        var adapter = await Adapter();
+        (await Fails(() => adapter.GetQuotesAsync(new[] { "E" }, CancellationToken.None))).Kind.Should().Be(BrokerErrorKind.MalformedResponse);
+    }
+
+    [Fact]
+    public async Task Quotes_ForAnEpicNotRequested_AreRejected()
+    {
+        _fake.MarketsJson = Quote("{\"bid\":1,\"offer\":2,\"updateTimeUTC\":\"2026-10-31T12:00:00\"}", "OTHER");
         var adapter = await Adapter();
         (await Fails(() => adapter.GetQuotesAsync(new[] { "E" }, CancellationToken.None))).Kind.Should().Be(BrokerErrorKind.MalformedResponse);
     }
@@ -421,7 +481,7 @@ public class CapitalComContractTests
     [Fact]
     public async Task QuoteRequests_AreBatchedAtTheDocumentedLimit()
     {
-        _fake.MarketsJson = "{\"markets\":[]}";
+        _fake.MarketsJson = "{\"marketDetails\":[]}";
         await (await Adapter()).GetQuotesAsync(Enumerable.Range(0, 120).Select(i => $"E{i}"), CancellationToken.None);
         _fake.Requests.Count(r => r.Path == "/api/v1/markets").Should().Be(3);
     }
@@ -680,6 +740,137 @@ public class CapitalComContractTests
         evidence.AllPassed.Should().BeFalse();
         evidence.Steps.Single(s => s.Name == "positions").Detail.Should().Be("Unavailable");
         JsonSerializer.Serialize(evidence).Should().NotContain("secret body");
+    }
+
+    [Fact]
+    public async Task Probe_PassesAgainstDocumentedShapes_AndRecordsTheRealAdapter()
+    {
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.Steps.Where(s => !s.Passed).Should().BeEmpty();
+        evidence.AllPassed.Should().BeTrue();
+        evidence.Adapter.Should().Be(nameof(CapitalComBrokerAdapter));
+        evidence.ApiHost.Should().Be(new Uri(BaseUri).Host);
+    }
+
+    [Fact]
+    public async Task Probe_NamesTheMalformedField_WithoutItsValue()
+    {
+        _fake.MarketsJson = "{\"markets\":[{\"epic\":\"EURUSD\",\"bid\":1234.5}]}";
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.Steps.Single(s => s.Name == "quote").Detail.Should().Be("MalformedResponse: marketDetails");
+        JsonSerializer.Serialize(evidence).Should().NotContain("1234.5");
+    }
+
+    [Fact]
+    public async Task Probe_ClosedMarket_CannotPassFreshness()
+    {
+        _fake.MarketDetails["EURUSD"] = CapitalFake.MarketDetail("EURUSD", status: "CLOSED");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.AllPassed.Should().BeFalse();
+        evidence.Steps.Single(s => s.Name == "instrumentMetadata").Passed.Should().BeTrue();
+        foreach (var step in new[] { "quote", "candles" })
+        {
+            evidence.Steps.Single(s => s.Name == step).Passed.Should().BeFalse();
+            evidence.Steps.Single(s => s.Name == step).Detail.Should().Contain("marketStatus=Closed");
+        }
+    }
+
+    [Theory]
+    [InlineData("2026-10-31T11:58:00")] // older than the policy allows
+    [InlineData("2026-10-31T12:05:00")] // in the future, which is how a wrong time zone conversion would show
+    public async Task Probe_QuoteOutsideTheFreshnessWindow_Fails(string updateTimeUtc)
+    {
+        _fake.MarketsJson = Quote($"{{\"bid\":1,\"offer\":1.001,\"updateTimeUTC\":\"{updateTimeUtc}\"}}", "EURUSD");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var quote = evidence.Steps.Single(s => s.Name == "quote");
+        quote.Passed.Should().BeFalse();
+        quote.Detail.Should().Contain("fresh=False");
+    }
+
+    [Fact]
+    public async Task Probe_StaleCandles_Fail()
+    {
+        _fake.PricesJson = """{"prices":[{"snapshotTimeUTC":"2026-10-30T10:00:00","openPrice":{"bid":1,"ask":1.1},"closePrice":{"bid":1,"ask":1.1},"highPrice":{"bid":1.2,"ask":1.3},"lowPrice":{"bid":0.9,"ask":1}}]}""";
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.Steps.Single(s => s.Name == "candles").Passed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Probe_MeasuresOrderEndpointCalls_FromTheAdapter()
+    {
+        var adapter = await Adapter();
+        adapter.NonSessionWriteRequests.Should().Be(0);
+        await adapter.GetAccountAsync("ACC-B", CancellationToken.None); // includes PUT /session
+        adapter.NonSessionWriteRequests.Should().Be(0);
+    }
+
+    // Evidence run output path
+
+    private sealed class Scratch : IDisposable
+    {
+        public string Folder { get; } = Directory.CreateTempSubdirectory("pilottrade-evidence-").FullName;
+        public void Dispose() => Directory.Delete(Folder, true);
+    }
+
+    private async Task<(int Code, int AdapterCreated, string Error)> RunEvidence(params string[] args)
+    {
+        var created = 0;
+        var adapter = await Adapter();
+        var error = new StringWriter();
+        var code = await DemoEvidenceRunner.RunAsync(args, "ACC-A", () => { created++; return adapter; }, _clock, new StringWriter(), error, CancellationToken.None);
+        return (code, created, error.ToString());
+    }
+
+    [Fact]
+    public async Task Evidence_MissingOutputFolder_ExitsBeforeAnyBrokerRequest()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(scratch.Folder, "missing", "evidence.json");
+        var (code, created, error) = await RunEvidence(DemoEvidenceRunner.Flag, path);
+        code.Should().Be(DemoEvidenceRunner.BadOutputPath);
+        created.Should().Be(0);
+        _fake.Requests.Should().BeEmpty();
+        error.Should().Contain("No broker request was made");
+        File.Exists(path).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Evidence_OutputPathThatIsAFolder_ExitsBeforeAnyBrokerRequest()
+    {
+        using var scratch = new Scratch();
+        var (code, created, _) = await RunEvidence(DemoEvidenceRunner.Flag, scratch.Folder);
+        code.Should().Be(DemoEvidenceRunner.BadOutputPath);
+        created.Should().Be(0);
+        _fake.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(DemoEvidenceRunner.Flag)]
+    [InlineData(DemoEvidenceRunner.Flag, "--epic", "EURUSD")]
+    [InlineData(DemoEvidenceRunner.Flag, " ")]
+    public async Task Evidence_WithoutAnOutputPath_ExitsBeforeAnyBrokerRequest(params string[] args)
+    {
+        var (code, created, error) = await RunEvidence(args);
+        code.Should().Be(DemoEvidenceRunner.BadOutputPath);
+        created.Should().Be(0);
+        _fake.Requests.Should().BeEmpty();
+        error.Should().Contain("Usage");
+    }
+
+    [Fact]
+    public async Task Evidence_ExistingFolder_RunsTheProbeAndWritesTheFile()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(scratch.Folder, "evidence.json");
+        var (code, created, _) = await RunEvidence(DemoEvidenceRunner.Flag, path, "--epic", "GOLD");
+        code.Should().Be(DemoEvidenceRunner.Success);
+        created.Should().Be(1);
+        _fake.Requests.Should().NotBeEmpty();
+        _fake.Requests.Should().Contain(r => r.PathAndQuery.Contains("epics=GOLD"));
+        Directory.GetFiles(scratch.Folder).Should().Equal(path);
+        var text = await File.ReadAllTextAsync(path);
+        text.Should().Contain(nameof(CapitalComBrokerAdapter));
+        foreach (var secret in new[] { "TEST-KEY", "TEST-USER", "TEST-PASS", "cst-", "sec-", "ACC-A" }) text.Should().NotContain(secret);
     }
 
     // Runtime configuration

@@ -2,7 +2,23 @@
 
 Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `master` at `c1679ba`.
 
-**Result: the code is ready for the authenticated read-only evidence run, and read-only Demo remains NO-GO until it passes.** No authenticated Capital.com result has been recorded, so nothing here is real broker validation. Demo execution is disabled and Live is locked.
+**Result: read-only Demo is NO-GO.** The owner's authenticated run on `c3adf2d` failed its quote step, and the fix has not run against the real API. Demo execution is disabled and Live is locked.
+
+## Authenticated run, 2026-10-31 18:38 UTC
+
+| Step | Recorded | What it does and does not show |
+|---|---|---|
+| accounts | Pass, 1 account | Login and parsing work; multiple accounts unproven |
+| accountIdentityAndFinancials | Pass | Account matched; available and equity present; margin used and realized P&L absent. No values recorded or compared |
+| instrumentMetadata | Pass, status Closed | Presence only, one epic. Closed is plausible on a Saturday evening |
+| positions | Pass, 0 | Empty parsing only |
+| workingOrders | Pass, 0 | Empty parsing only |
+| quote | **Fail**, `MalformedResponse` | Adapter bug, see below |
+| candles | Pass, 50 | Count only; freshness was not checked |
+
+**Quote failure.** `GET /markets?epics=` is documented to answer with `marketDetails[]`, holding `instrument` and `snapshot`. Only `searchTerm` answers with `markets[]`. The adapter read `markets`, so every real quote request would fail and all Capital market data would be NO_TRADE. The mock had the same wrong assumption, which is why the tests passed. It failed closed, and the closed market was not the cause. The real response body was never recorded, so this diagnosis rests on the documentation.
+
+**Changes after the run.** The adapter and fake now follow the documented shape. The probe records the adapter, host and build; measures order-endpoint use instead of hardcoding it; names malformed fields; checks metadata, quote and candle values; and cannot pass freshness on a closed market. `DemoEvidenceRunner` checks the output path before creating the adapter, with regression tests. Evidence files are ignored by git.
 
 ## What changed
 
@@ -27,8 +43,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 |---|---|
 | Solution build | 0 errors, 0 warnings from the test and source projects |
 | Unit tests | 49 passed |
-| Integration, contract and API tests | 164 passed, 3 skipped (macOS only) |
-| Credentials and owner authorization on their own | 50 passed, 3 skipped (macOS only) |
+| Integration, contract and API tests | 185 passed, 3 skipped (macOS only) |
 | Frontend lint and build | Pass |
 | NuGet and npm vulnerability audits | No findings |
 | Publish win-x64 and osx-arm64 | Both succeed |
@@ -38,7 +53,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 
 ## Not verified
 
-- **Real Capital.com API:** no recorded result. The owner's first evidence run crashed on its output path after the probe, losing the results, and that path bug is now fixed. Field shapes come from documentation.
+- **Real Capital.com API after the fix:** the quote parsing, its time zone conversion and the stricter probe checks have run against mocks of the documented shapes only.
 - **macOS at runtime:** the macOS tests and smoke test have never run. They run in CI after a push.
 - **Published smoke test owner flow:** written but never run. It was skipped locally so the real owner token stayed unread, and CI will be its first run. The same flow is tested in-process.
 - **Workflow changes:** `build.yml` has not been run.
@@ -46,7 +61,7 @@ Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `m
 
 ## Remaining blockers
 
-1. The authenticated evidence run must be repeated by the owner during market hours.
+1. The owner must repeat the evidence run on the fixed build during market hours, for 2 asset classes, and compare exposure with the web platform.
 2. A push is needed for macOS and CI verification.
 3. Before the execution phase: Capital.com documents no margin-used or realized-P&L field, so the risk engine rejects all Capital orders. Solving this needs a proven data source or an owner-approved policy decision.
 4. Build logs remain in 5 older commits of the public repository. History was not rewritten. A pattern search of all commits found no known credential shapes, but it cannot prove the logs hold nothing private.

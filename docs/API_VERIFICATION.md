@@ -1,12 +1,12 @@
 # API Verification
 
-Reviewed 2026-10-31 from documentation and mocks. **No authenticated result has been recorded:** the owner's first evidence run on 2026-10-31 crashed on its output path after the probe, losing the results. This file records no real broker validation until sanitized evidence exists.
+Reviewed 2026-10-31 from documentation, mocks and one authenticated run on `c3adf2d`. That run failed its quote step, so **the Capital.com read-only integration is not validated.**
 
 ## Capital.com
 - Demo base: https://demo-api-capital.backend-capital.com
 - Live base: https://api-capital.backend-capital.com (never contacted; Live is locked)
 - Contract: see `BROKER_CONTRACT_MATRIX.md`.
-- Evidence: not yet recorded. See `DEMO_RELEASE_GO_NO_GO.md`.
+- Evidence: 6 of 7 steps passed, see `phase3/CAPITAL_DEMO_READONLY_HARDENING_REPORT.md` and `DEMO_RELEASE_GO_NO_GO.md`. The evidence file stays local and is ignored by git.
 
 ## Anthropic Claude
 - Messages API: POST https://api.anthropic.com/v1/messages with x-api-key and anthropic-version.
