@@ -12,6 +12,7 @@
 - Upgraded `vite` to 6.4.5 and `typescript-eslint` to 8.72.1, which leaves 12 moderate development-only npm advisories from `minimatch`.
 - Acceptance on `09244cf`: gates 1, 2, 3 and 6 pass. Gate 4 is blocked by closed FX and gold markets, gates 5 and 7 wait for the owner, gates 8 and 9 have not run, and gate 10 still fails. Read-only Demo stays NO-GO.
 - First CI run, on `dc377bd`: tests passed on Windows and macOS, and the smoke test failed on a wrong check. It expected `executionEnabled` to be false in simulation, and now checks that the run is on the simulator.
+- Second CI run, on `347ad92`: tests passed on both systems, and the smoke test failed with a 400 on instrument selection. The likely cause is PowerShell passing the JSON list as one object, so the script sent every epic in one request. It now unrolls the list, which CI has yet to confirm.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)

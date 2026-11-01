@@ -61,10 +61,11 @@ try {
         Check 'Runs on the simulator, not a broker' ($runtime.mode -eq 'Simulation')
         Check 'Live is locked' ([bool]$runtime.liveLocked)
 
-        $accounts = @(Invoke-RestMethod -Uri "$base/api/accounts" -Headers $owner)
+        # Invoke-RestMethod can emit a JSON array as one object; the pipeline unrolls it, so [0] is the first item either way.
+        $accounts = @(Invoke-RestMethod -Uri "$base/api/accounts" -Headers $owner | ForEach-Object { $_ })
         $accountId = $accounts[0].accountId
         Check 'Accounts are listed' ([bool]$accountId)
-        $found = @(Invoke-RestMethod -Uri "$base/api/instruments/search?q=&limit=5" -Headers $owner)
+        $found = @(Invoke-RestMethod -Uri "$base/api/instruments/search?q=&limit=5" -Headers $owner | ForEach-Object { $_ })
         Check 'Instruments are listed' ($found.Count -gt 0)
 
         function Guarded($path, $body) {

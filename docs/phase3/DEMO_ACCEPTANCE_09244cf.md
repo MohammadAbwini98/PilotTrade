@@ -1,10 +1,10 @@
 # Capital.com Demo Acceptance: Commit 09244cf
 
-Tested commit: `09244cf22769e0efba966643a3f962fd643bfa64`, on `feature/capital-demo-readonly-hardening`, clean working tree. Runs: 2026-11-01, 17:07 to 17:10 UTC (a Sunday, before the FX and gold open). This report and its documents follow in a docs-only commit, and no code changed after `09244cf`.
+Tested commit: `09244cf22769e0efba966643a3f962fd643bfa64`, on `feature/capital-demo-readonly-hardening`, clean working tree. Runs: 2026-11-01, 17:07 to 17:10 UTC (a Sunday, before the FX and gold open). This report and its documents follow in a docs-only commit. The only later code changes are corrections to `scripts/smoke-test.ps1`, which the probe does not use, but the go/no-go rule still asks for new evidence on the release commit.
 
-**Result: read-only Demo is NO-GO. Not ready for controlled Demo execution.** Gates 1, 2, 3 and 6 pass. Gate 4 is blocked by closed FX and gold markets. Gates 5 and 7 wait for the owner. Gates 8 and 9 have not run. Gate 10 still fails strictly on 12 moderate development-only npm advisories.
+**Result: read-only Demo is NO-GO. Not ready for controlled Demo execution.** Gates 1, 2, 3 and 6 pass. Gate 4 is blocked by closed FX and gold markets. Gates 5 and 7 wait for the owner. Gate 8 has failed twice in CI, both times in the smoke test script. Gate 9 has not run. Gate 10 still fails strictly on 12 moderate development-only npm advisories.
 
-No order was placed. Demo order submission stays disabled and Live stays locked. Nothing was pushed.
+No order was placed. Demo order submission stays disabled and Live stays locked. The branch was pushed only for CI, with owner approval for each push.
 
 ## Test and build results
 
@@ -20,8 +20,8 @@ No order was placed. Demo order submission stays disabled and Live stays locked.
 
 | Platform | Status |
 |---|---|
-| Windows, local | Verified as above. CI has not run |
-| macOS | **Partly verified.** CI on `dc377bd`: unit 100 of 100, integration 223 passed, 4 skipped, publish passed, smoke test failed on a wrong check. The keychain check still needs a real Mac |
+| Windows | Verified as above. In CI, tests and publish passed and the smoke test has not finished |
+| macOS | **Partly verified.** CI on `dc377bd`: unit 100 of 100, integration 223 passed, 4 skipped, publish passed. The smoke test has not finished on either CI run. The keychain check still needs a real Mac |
 
 ## Instrument results on the real Demo API
 
@@ -53,7 +53,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 | 5 | Identity, balance, equity, funds, positions and working orders match the web platform | **BLOCKED** | User-dependent | Probe side only. [Checklist](../DEMO_GATE5_OWNER_CHECKLIST.md) | Owner fills the checklist. With no holdings, non-empty mapping stays mock only |
 | 6 | No order endpoint called | **PASS** | Verified | All four files | Measured by the adapter's write counter, with no wire capture |
 | 7 | Evidence holds no credential, token, session header or personal data | **Automated checks pass, owner review pending** | Verified, then user-dependent | Scan results below, sanitized report | Owner reads the sanitized report before sharing it |
-| 8 | CI on Windows and macOS, including the owner flow | **FAIL** | Run 41331400074 on `dc377bd`: tests and publish passed on both systems | None | The smoke test expected `executionEnabled` false in simulation, where the simulator reports true, so it stopped at its first owner step. The later owner steps and the published-output secret scan did not run. The check is corrected and needs another push |
+| 8 | CI on Windows and macOS, including the owner flow | **FAIL** | Runs 41331400074 on `dc377bd` and 41334983006 on `347ad92`: tests and publish passed on both systems, and the smoke test failed on both | None | First, the script expected `executionEnabled` false in simulation, where the simulator reports true. Second, `/api/instruments/select` answered 400. The likely cause is the script sending every epic in one request, because PowerShell can hand it a JSON list as one object. That was reproduced against a local stub on Windows PowerShell 5.1 only, while CI uses PowerShell 7, and the select route has no other source of a 400. The snapshot step and the published-output secret scan have not run in CI. The script now unrolls the list, and the correction is unproven until another push |
 | 9 | Credentials from the macOS keychain on a real Mac | **PENDING** | Needs a Mac | None | Steps below |
 | 10 | NuGet and npm audits clean | **FAIL** strictly | Verified | Below | Owner decides whether to accept the residual, or waits for an upstream fix |
 
