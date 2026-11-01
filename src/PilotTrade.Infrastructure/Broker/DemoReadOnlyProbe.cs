@@ -13,9 +13,12 @@ public sealed record DemoProbeEvidence(
     string Adapter,
     string ApiHost,
     string? BuildVersion,
+    string? GitSha,
+    string? WorkingTree,
     string AccountIdMasked,
     string AccountSource,
     string RequestedEpic,
+    string? InstrumentEpic,
     bool OrderEndpointsCalled,
     bool AllPassed,
     IReadOnlyList<DemoProbeStep> Steps);
@@ -71,6 +74,7 @@ public sealed class DemoReadOnlyProbe
         }
 
         var status = MarketStatus.Unknown;
+        string? instrumentEpic = null;
         if (!string.IsNullOrWhiteSpace(target))
         {
             await Step("accountIdentityAndFinancials", () => _broker.GetAccountAsync(target, ct), a =>
@@ -84,6 +88,7 @@ public sealed class DemoReadOnlyProbe
                 m =>
                 {
                     status = m.Status;
+                    instrumentEpic = m.Epic;
                     var rulesValid = m.MinDealSize > 0 && m.MaxDealSize >= m.MinDealSize && m.DealSizeStep > 0 && m.TickSize > 0 && m.MinStopDistance is not null && m.MaxStopDistance is not null;
                     return (m.Status != MarketStatus.Unknown && m.QuoteCurrency.Length > 0 && rulesValid,
                         $"instrumentName={m.Name}; assetClass={m.AssetClass}; status={m.Status}; precision={m.PricePrecision}; currencyPresent={m.QuoteCurrency.Length > 0}; dealingRulesValid={rulesValid}");
@@ -99,11 +104,16 @@ public sealed class DemoReadOnlyProbe
         await Step("quote", () => _broker.GetQuotesAsync(new[] { epic }, ct), q => DescribeQuote(q.FirstOrDefault(x => x.Epic == epic), now, marketOpen, status));
         await Step("candles", () => _broker.GetHistoryAsync(epic, CandleTimeframe, 50, ct), c => DescribeCandles(c, epic, now, marketOpen, status));
 
+        var assembly = typeof(DemoReadOnlyProbe).Assembly;
         return new DemoProbeEvidence(now, _broker.Environment.ToString(), _broker.GetType().Name,
             (_broker as CapitalComBrokerAdapter)?.ApiHost ?? "(none)",
-            typeof(DemoReadOnlyProbe).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-            Mask(target), accountSource, epic, (_broker as CapitalComBrokerAdapter)?.NonSessionWriteRequests > 0, steps.All(s => s.Passed), steps);
+            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            BuildMetadata(assembly, "GitSha"), BuildMetadata(assembly, "WorkingTree"),
+            Mask(target), accountSource, epic, instrumentEpic, (_broker as CapitalComBrokerAdapter)?.NonSessionWriteRequests > 0, steps.All(s => s.Passed), steps);
     }
+
+    private static string? BuildMetadata(Assembly assembly, string key) =>
+        assembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == key)?.Value;
 
     private static string FailureDetail(BrokerException ex) =>
         ex.Kind == BrokerErrorKind.MalformedResponse && ex.Message.StartsWith(CapitalComJson.MalformedPrefix, StringComparison.Ordinal)

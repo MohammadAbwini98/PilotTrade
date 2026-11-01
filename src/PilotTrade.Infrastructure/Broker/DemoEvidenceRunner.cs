@@ -32,7 +32,13 @@ public static class DemoEvidenceRunner
         var epic = epicIndex >= 0 && epicIndex + 1 < args.Length ? args[epicIndex + 1] : "EURUSD";
         var evidence = await new DemoReadOnlyProbe(createAdapter(), clock).RunAsync(accountId, epic, ct);
         var json = JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true });
-        try { await File.WriteAllTextAsync(path, json, ct); }
+        try
+        {
+            // CreateNew, so a file that appeared during the run is kept rather than replaced.
+            await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+            await using var writer = new StreamWriter(file);
+            await writer.WriteAsync(json.AsMemory(), ct);
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // The evidence is sanitized, so it is safe to print rather than lose the run.
@@ -51,6 +57,7 @@ public static class DemoEvidenceRunner
         var folder = Path.GetDirectoryName(path);
         if (folder is null || !Directory.Exists(folder)) return "Evidence folder not found";
         if (Directory.Exists(path)) return "Evidence path is a folder";
+        if (File.Exists(path)) return "Evidence file already exists, and earlier evidence is never replaced. Choose a new name";
         var check = path + ".write-check";
         try
         {

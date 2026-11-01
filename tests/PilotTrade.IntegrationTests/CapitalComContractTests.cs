@@ -924,6 +924,56 @@ public class CapitalComContractTests
         foreach (var secret in new[] { "TEST-KEY", "TEST-USER", "TEST-PASS", "cst-", "sec-", "ACC-A" }) text.Should().NotContain(secret);
     }
 
+    [Fact]
+    public async Task Evidence_ExistingFile_IsKept_AndExitsBeforeAnyBrokerRequest()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(scratch.Folder, "evidence.json");
+        await File.WriteAllTextAsync(path, "earlier run");
+        var (code, created, error) = await RunEvidence(DemoEvidenceRunner.Flag, path);
+        code.Should().Be(DemoEvidenceRunner.BadOutputPath);
+        created.Should().Be(0);
+        _fake.Requests.Should().BeEmpty();
+        error.Should().Contain("already exists");
+        (await File.ReadAllTextAsync(path)).Should().Be("earlier run");
+    }
+
+    [Fact]
+    public async Task Evidence_FileThatAppearsDuringTheRun_IsKept_AndTheRunIsPrinted()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(scratch.Folder, "evidence.json");
+        var adapter = await Adapter();
+        var error = new StringWriter();
+        var code = await DemoEvidenceRunner.RunAsync(new[] { DemoEvidenceRunner.Flag, path }, "ACC-A", () => { File.WriteAllText(path, "other run"); return adapter; }, _clock, new StringWriter(), error, CancellationToken.None);
+        code.Should().Be(DemoEvidenceRunner.WriteFailed);
+        (await File.ReadAllTextAsync(path)).Should().Be("other run");
+        error.ToString().Should().Contain(nameof(CapitalComBrokerAdapter));
+    }
+
+    [Fact]
+    public async Task Evidence_RecordsCommit_TreeState_UtcTime_ActualEpic_AndAccountSource()
+    {
+        using var scratch = new Scratch();
+        var path = Path.Combine(scratch.Folder, "evidence.json");
+        (await RunEvidence(DemoEvidenceRunner.Flag, path, "--epic", "GOLD")).Code.Should().Be(DemoEvidenceRunner.Success);
+        var evidence = JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement;
+        evidence.GetProperty("GitSha").GetString().Should().MatchRegex("^([0-9a-f]{40}|unknown)$");
+        evidence.GetProperty("WorkingTree").GetString().Should().BeOneOf("clean", "dirty", "unknown");
+        evidence.GetProperty("RunUtc").GetDateTimeOffset().Offset.Should().Be(TimeSpan.Zero);
+        evidence.GetProperty("RequestedEpic").GetString().Should().Be("GOLD");
+        evidence.GetProperty("InstrumentEpic").GetString().Should().Be("GOLD");
+        evidence.GetProperty("AccountSource").GetString().Should().Be("configured");
+    }
+
+    [Fact]
+    public async Task Probe_MetadataFailure_LeavesTheActualEpicUnrecorded()
+    {
+        _fake.MarketDetails["EURUSD"] = CapitalFake.MarketDetail("GOLD");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.InstrumentEpic.Should().BeNull();
+    }
+
     // Runtime configuration
 
     [Fact]

@@ -22,4 +22,26 @@
     <ProjectReference Include="..\PilotTrade.Application\PilotTrade.Application.csproj" />
   </ItemGroup>
 
+  <!-- Evidence must say which commit produced it and whether the tree was clean, which the build version cannot show. -->
+  <Target Name="StampGitState" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git rev-parse HEAD" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="true" StandardOutputImportance="low" StandardErrorImportance="low" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="StampedGitSha" />
+      <Output TaskParameter="ExitCode" PropertyName="StampedGitShaExit" />
+    </Exec>
+    <Exec Command="git status --porcelain" WorkingDirectory="$(MSBuildProjectDirectory)" ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="true" StandardOutputImportance="low" StandardErrorImportance="low" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="StampedGitStatus" />
+      <Output TaskParameter="ExitCode" PropertyName="StampedGitStatusExit" />
+    </Exec>
+    <PropertyGroup>
+      <StampedGitSha Condition="'$(StampedGitShaExit)' != '0'">unknown</StampedGitSha>
+      <StampedWorkingTree>dirty</StampedWorkingTree>
+      <StampedWorkingTree Condition="'$(StampedGitStatus)' == ''">clean</StampedWorkingTree>
+      <StampedWorkingTree Condition="'$(StampedGitStatusExit)' != '0'">unknown</StampedWorkingTree>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="GitSha" Value="$(StampedGitSha)" />
+      <AssemblyMetadata Include="WorkingTree" Value="$(StampedWorkingTree)" />
+    </ItemGroup>
+  </Target>
+
 </Project>
