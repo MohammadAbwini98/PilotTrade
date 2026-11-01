@@ -103,6 +103,10 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTimeOffset
 var api = app.MapGroup("/api").AddEndpointFilter(ApiSecurity.RequireOwner).AddEndpointFilter(ApiSecurity.SanitizeBrokerErrors);
 var guarded = api.MapGroup("").AddEndpointFilter(ApiSecurity.RequireBrowserGuards);
 
+// One account per run: a route never reads or selects for an account other than the one explicitly configured.
+static IResult? RefuseAccount(BrokerRuntimeOptions options, string accountId) =>
+    accountId == options.AccountId ? null : Results.Json(new { error = "AccountNotConfigured" }, statusCode: StatusCodes.Status403Forbidden);
+
 api.MapGet("/runtime", (BrokerRuntimeOptions options, IBrokerAdapter broker) => Results.Ok(new
 {
     mode = options.Mode.ToString(),
@@ -119,16 +123,18 @@ api.MapGet("/instruments/search", async (string? q, int? limit, IInstrumentCatal
     Results.Ok(await catalog.SearchAsync(q ?? "", Math.Clamp(limit ?? 50, 1, 200), ct)));
 
 api.MapGet("/instruments/selection", (string accountId, BrokerRuntimeOptions options, IInstrumentSelectionService selections) =>
-    selections.Current(accountId, options.Environment) is { } s ? Results.Ok(s) : Results.NotFound());
+    RefuseAccount(options, accountId) ?? (selections.Current(accountId, options.Environment) is { } s ? Results.Ok(s) : Results.NotFound()));
 
-api.MapGet("/instruments/{epic}", async (string epic, string accountId, IBrokerAdapter broker, CancellationToken ct) =>
+api.MapGet("/instruments/{epic}", async (string epic, string accountId, IBrokerAdapter broker, BrokerRuntimeOptions options, CancellationToken ct) =>
 {
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
     var m = await broker.GetInstrumentAsync(epic, accountId, ct);
     return m is null ? Results.NotFound() : Results.Ok(m);
 });
 
 guarded.MapPost("/instruments/select", async (InstrumentSelectRequest req, IBrokerAdapter broker, BrokerRuntimeOptions options, IInstrumentSelectionService selections, CancellationToken ct) =>
 {
+    if (RefuseAccount(options, req.AccountId) is { } refused) return refused;
     var meta = await broker.GetInstrumentAsync(req.Epic, req.AccountId, ct);
     if (meta is null) return Results.NotFound(new { error = "NotFound" });
     return Results.Ok(new { selection = selections.Select(req.AccountId, options.Environment, req.Epic, "owner"), instrument = meta });
@@ -137,19 +143,20 @@ guarded.MapPost("/instruments/select", async (InstrumentSelectRequest req, IBrok
 // Account
 api.MapGet("/accounts", async (IBrokerAdapter broker, CancellationToken ct) => Results.Ok(await broker.GetAccountsAsync(ct)));
 
-api.MapGet("/account", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
-    Results.Ok(await broker.GetAccountAsync(accountId, ct)));
+api.MapGet("/account", async (string accountId, IBrokerAdapter broker, BrokerRuntimeOptions options, CancellationToken ct) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(await broker.GetAccountAsync(accountId, ct)));
 
 // Positions
-api.MapGet("/positions", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
-    Results.Ok(await broker.GetPositionsAsync(accountId, ct)));
+api.MapGet("/positions", async (string accountId, IBrokerAdapter broker, BrokerRuntimeOptions options, CancellationToken ct) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(await broker.GetPositionsAsync(accountId, ct)));
 
-api.MapGet("/orders", async (string accountId, IBrokerAdapter broker, CancellationToken ct) =>
-    Results.Ok(await broker.GetWorkingOrdersAsync(accountId, ct)));
+api.MapGet("/orders", async (string accountId, IBrokerAdapter broker, BrokerRuntimeOptions options, CancellationToken ct) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(await broker.GetWorkingOrdersAsync(accountId, ct)));
 
 // Market snapshot: any missing, invalid or outdated input is a NO_TRADE result, not a partial snapshot.
 guarded.MapPost("/market/snapshot", async (MarketSnapshotRequest req, IMarketDataService mds, IInstrumentSelectionService selections, BrokerRuntimeOptions options, CancellationToken ct) =>
 {
+    if (RefuseAccount(options, req.AccountId) is { } refused) return refused;
     var current = selections.Current(req.AccountId, options.Environment);
     if (current is null || current.Epic != req.Epic || current.SelectionVersion != req.SelectionVersion)
         return Results.Ok(new { outcome = "NO_TRADE", reason = "Selection changed: request outdated", snapshot = (MarketSnapshotBundle?)null });

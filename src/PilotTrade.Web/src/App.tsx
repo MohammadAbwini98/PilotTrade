@@ -111,9 +111,11 @@ export default function App() {
       const rt = await request<Runtime>('/api/runtime')
       const list = await request<AccountSummary[]>('/api/accounts')
       setRuntime(rt)
-      setAccounts(list)
-      const initial = list.find(a => a.accountId === rt.accountId) ?? list.find(a => a.preferred) ?? list[0]
-      if (initial) await switchAccount(initial.accountId)
+      // Only the account the backend was configured with is ever selected, never a preferred or first one.
+      const configured = list.filter(a => a.accountId === rt.accountId)
+      setAccounts(configured)
+      if (configured.length === 0) throw new Error('The configured trading account is not available from the broker.')
+      await switchAccount(configured[0].accountId)
     })
   }
 

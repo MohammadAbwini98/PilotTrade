@@ -2,6 +2,7 @@ namespace PilotTrade.IntegrationTests;
 
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using PilotTrade.Api;
 
 [Trait("Category", "OwnerAuthorization")]
@@ -212,25 +213,59 @@ public sealed class DemoApiFlowTests : IDisposable
     }
 
     [Fact]
-    public async Task AccountAndExposure_AreServedForTheRequestedAccount_WithoutTokens()
+    public async Task AccountAndExposure_AreServedForTheConfiguredAccount_WithoutTokens()
     {
-        await _host.StoreDemoCredentialsAsync();
-        var client = await _host.OwnerClientAsync();
+        using var host = new ApiTestHost("capital_demo", "demo", "ACC-B");
+        await host.StoreDemoCredentialsAsync();
+        var client = await host.OwnerClientAsync();
 
         var account = await client.GetStringAsync("/api/account?accountId=ACC-B");
         account.Should().Contain("ACC-B").And.Contain("\"marginUsed\":null");
-        (await client.GetStringAsync("/api/positions?accountId=ACC-B")).Should().Contain("GOLD");
+        var positions = await client.GetStringAsync("/api/positions?accountId=ACC-B");
+        positions.Should().Contain("deal-GOLD").And.Contain("\"currency\":\"USD\"");
         (await client.GetStringAsync("/api/orders?accountId=ACC-B")).Should().Contain("wo-GOLD");
-        (await client.GetStringAsync("/api/orders?accountId=ACC-A")).Should().Be("[]");
-        foreach (var text in new[] { account }) text.Should().NotContain("cst-").And.NotContain("sec-").And.NotContain("TEST-");
-        _host.Capital.OrderRequests.Should().BeEmpty();
+        foreach (var text in new[] { account, positions }) text.Should().NotContain("cst-").And.NotContain("sec-").And.NotContain("TEST-");
+        host.Capital.OrderRequests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("/api/account?accountId=ACC-B")]
+    [InlineData("/api/positions?accountId=ACC-B")]
+    [InlineData("/api/orders?accountId=ACC-B")]
+    [InlineData("/api/instruments/selection?accountId=ACC-B")]
+    [InlineData("/api/instruments/EURUSD?accountId=ACC-B")]
+    [InlineData("/api/account?accountId=ACC-X")]
+    public async Task AnotherAccount_IsRefused_WithoutCallingTheBroker(string path)
+    {
+        await _host.StoreDemoCredentialsAsync();
+        var response = await (await _host.OwnerClientAsync()).GetAsync(path);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Be("{\"error\":\"AccountNotConfigured\"}");
+        _host.Capital.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("/api/instruments/select")]
+    [InlineData("/api/market/snapshot")]
+    public async Task AnotherAccount_CannotSelectOrSnapshot(string path)
+    {
+        await _host.StoreDemoCredentialsAsync();
+        var response = await PostAsync(await _host.OwnerClientAsync(), path, new { accountId = "ACC-B", epic = "EURUSD", selectionVersion = 1 });
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _host.Capital.Requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task UnknownAccount_Returns404()
+    public async Task CapitalDemoMode_ResolvesTheRealAdapter_ForRoutesAndServices()
     {
         await _host.StoreDemoCredentialsAsync();
-        (await (await _host.OwnerClientAsync()).GetAsync("/api/account?accountId=ACC-X")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var client = await _host.OwnerClientAsync();
+        _host.Services.GetRequiredService<IBrokerAdapter>().Should().BeOfType<CapitalComBrokerAdapter>();
+        var version = await SelectAsync(client, "EURUSD");
+        (await SnapshotAsync(client, "EURUSD", version)).GetProperty("outcome").GetString().Should().Be("SNAPSHOT_READY");
+        _host.Capital.Requests.Select(r => r.Path).Should().Contain("/api/v1/prices/EURUSD").And.Contain("/api/v1/markets/EURUSD");
+        _host.Capital.Requests.Should().Contain(r => r.PathAndQuery.Contains("resolution=HOUR"));
+        _host.Capital.OrderRequests.Should().BeEmpty();
     }
 
     [Fact]
