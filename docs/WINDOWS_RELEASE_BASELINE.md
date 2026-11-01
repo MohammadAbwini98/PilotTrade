@@ -62,7 +62,7 @@ Former numbers are kept, and nothing is renumbered. "Current evidence" means evi
 | 5 | Identity, funds and holdings match the Demo web platform | **Blocked** on the owner | None | **Owner** | 03-02 | Owner completes `DEMO_GATE5_OWNER_CHECKLIST.md` for the release commit |
 | 6 | No order endpoint called | Passed on `09244cf` | None, needs a re-run | Engineering | 03-01 | `OrderEndpointsCalled=false` in all evidence on the release commit |
 | 7 | Evidence holds no credential, token or personal data | Scan clean, **owner review pending** | Tracked-file scan clean, evidence not re-made | Engineering, then **owner** | 03-03 | Scan clean on the release evidence, and the owner has read the sanitized report |
-| 8 | CI passes on Windows, including the owner flow | **Not passed on the release commit.** Passed on `2db8417` under the old two-system rule | None, no run on `455a2fd` | Engineering, with the owner approving each push | 01-01, 01-02 | Whole Windows job green on the release commit |
+| 8 | CI passes on Windows, including the owner flow | **Not passed on the release commit.** Passed on `2db8417` under the old two-system rule, and on `9c8cce6` under the Windows rule (run 41350159296) | None, no run on `455a2fd` | Engineering, with the owner approving each push | 01-01, 01-02 | Whole Windows job green on the release commit |
 | 9 | Former: credentials from the macOS keychain on a real Mac | **N/A, Windows only** | Not applicable | None | None | None. Not a failure |
 | 10 | No known vulnerable dependency | **Fail** strictly | Measured above: NuGet clean, production npm clean, 12 moderate in development tooling | Engineering, and the **owner** if an exception is wanted | 01-04 | `npm audit` clean, or a written owner-approved exception |
 
