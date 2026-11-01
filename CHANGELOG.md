@@ -26,6 +26,7 @@
 - Portable Windows package: `scripts/package-windows.ps1` builds a ZIP that CI verifies and smoke-tests after unzipping. A packaged build answers on `127.0.0.1:5099`, works from any folder and keeps its database in `%LOCALAPPDATA%\PilotTrade`. An older `pilottrade.db` in the working directory is not picked up. See `docs/WINDOWS_PORTABLE.md`.
 - Open-market evidence on `2c1e9ed`, 22:13 UTC: BTCUSD passed. EURUSD was open with its quote and candle steps passing, and its snapshot refused stale 1h candles. GOLD was still closed. Gate 4 has not passed, and no order endpoint was called.
 - Ninth CI run, on `22d9503`: green, with the smoke test at 27/27 and the portable ZIP built, verified and smoke-tested after unzipping, including the default address, per-user database, restart and older-database warning. 100 unit tests passed, 229 of 232 integration tests passed with 3 skipped, and the secret scan found nothing in 900 files. The standard-user checklist on Windows 10 and 11 has not been run, so task 01-03 is not complete.
+- Open-market evidence on `90d141b`, 22:44 UTC: the same result. BTCUSD passed, EURUSD's snapshot refused stale 1h candles, and GOLD was still closed. Gate 4 has not passed, and no order endpoint was called.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)
