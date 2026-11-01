@@ -37,3 +37,9 @@ Run this on Windows 10 x64 and on Windows 11 x64, each under a standard, non-adm
 - [ ] No order was submitted, as the journal in the UI shows
 - [ ] After deleting the folder, the data under `%LOCALAPPDATA%\PilotTrade` remains
 - [ ] Rolling back to an earlier folder starts the earlier version
+
+## CI evidence
+
+Run 41357066494 on `22d9503`, on Windows 10.0.26100 (the hosted runner, which is not evidence for a Windows 11 desktop): green. The downloaded ZIP is 51.4 MB, SHA-256 `6b1447172d7129c7aec5a0d414496c979be3357c3bf80551c5bfb471d497c842`. It matches its `.sha256` file and the manifest's `packageSha256`, and all 368 listed files verify. The build names its commit, and the working tree stayed clean.
+
+The checklist above has not been run, so compatibility with a standard user on Windows 10 and Windows 11 is unproven.
