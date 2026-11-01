@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $files = @(git ls-files | Where-Object { Test-Path $_ -PathType Leaf } | ForEach-Object { Get-Item $_ -Force })
 foreach ($path in $ExtraPaths) { $files += Get-ChildItem $path -Recurse -File -Force }
 
-$forbiddenName = '(^|[\\/])\.env$|\.db(-wal|-shm)?$|\.pfx$|\.pem$|\.key$|\.log$'
-$textFile = '\.(cs|ts|tsx|js|css|html|json|md|yml|yaml|xml|csproj|config|txt|ps1|sh|env|example)$'
+$forbiddenName = '(^|[\\/])\.env$|\.db(-wal|-shm)?$|\.pfx$|\.pem$|\.key$|\.log$|demo-readonly-evidence[^\\/]*\.json$'
+$textFile = '\.(cs|ts|tsx|js|css|html|json|md|yml|yaml|xml|csproj|config|txt|ps1|sh|env|example|trx)$'
 $patterns = @(
     'sk-ant-[A-Za-z0-9_-]{16,}',
     '-----BEGIN [A-Z ]*PRIVATE KEY-----',

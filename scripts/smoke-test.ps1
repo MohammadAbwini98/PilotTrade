@@ -117,6 +117,10 @@ try {
         $app.Kill(); $app.WaitForExit(10000) | Out-Null
         $logs = (Get-Content "$db.out", "$db.err" -Raw -ErrorAction SilentlyContinue) -join ''
         Check 'Owner token is not in the app logs' (-not $logs.Contains($token))
+        # Read as Latin-1, so that binaries are searched byte for byte. This finds the token as plain text only.
+        $latin1 = [Text.Encoding]::GetEncoding(28591)
+        $holding = @(Get-ChildItem $workDir -Recurse -File -Force | Where-Object { [IO.File]::ReadAllText($_.FullName, $latin1).Contains($token) })
+        Check 'Owner token is not in the published files' ($holding.Count -eq 0)
     }
 }
 finally {
