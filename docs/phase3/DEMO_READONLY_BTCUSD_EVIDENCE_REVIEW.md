@@ -4,6 +4,8 @@ Date: 2026-10-31. Evidence: `docs/phase3/demo-readonly-evidence-btcusd.json` (ig
 
 **Result: the run is valid and all 7 steps passed, but read-only Demo stays NO-GO.** Gates 1, 5, 7, 8 and 9 are open. Demo execution is disabled and Live is locked.
 
+This review is superseded by `DEMO_READONLY_GATE_ACCEPTANCE_24b4360.md`. The 19:02 UTC file it reviews has since been overwritten by a later run from uncommitted code.
+
 The evidence holds presence flags, counts and ages by design. It holds no prices, spread, balances or raw broker responses, so those values could not be checked here.
 
 ## Review results
