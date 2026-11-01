@@ -43,6 +43,12 @@ dotnet run --project src/PilotTrade.Api -- --demo-readonly-evidence "$PWD/docs/p
 
 Before any broker request, the run checks the output path and exits with code 2 if it is unusable. Exit code 0 means every step passed, 1 means a step failed, and 3 means the file could not be written, in which case the sanitized evidence is printed instead.
 
-A closed market fails the quote and candle steps, because freshness cannot be proven then. Check that `RequestedEpic` and `instrumentName` show the instrument you meant, and that `AccountSource` is `configured` if you set `TRADING_ACCOUNT_ID`. Files named `docs/phase3/demo-readonly-evidence*.json` are ignored by git; use a different name per epic, such as `demo-readonly-evidence-gold.json`.
+A closed market fails the quote and candle steps, because freshness cannot be proven then. Check that `RequestedEpic` and `instrumentName` show the instrument you meant, and that `AccountSource` is `configured` if you set `TRADING_ACCOUNT_ID`. Files named `docs/phase3/demo-readonly-evidence*.json` are ignored by git; use a different name per epic and commit, such as `demo-readonly-evidence-gold-<sha>.json`. An existing file is never replaced, and the run exits with code 2 instead.
 
-Review the file before sharing it. It should hold only the adapter, host and build, a masked account ID and step results. The masked ID keeps the last 4 digits.
+Do not share the raw file: the masked ID keeps the last 4 digits. To check that a set of files belongs to one clean commit and get a version that can be shared, once `demo-readonly-evidence-btcusd-`, `-eurusd-` and `-gold-<sha>.json` exist:
+
+```bash
+powershell -NoProfile -File scripts/demo-evidence-report.ps1 -Sha <sha>
+```
+
+Rebuild after committing and before a run, because the commit and working-tree state are stamped at build time. Then compare the account with the web platform using `DEMO_GATE5_OWNER_CHECKLIST.md`.

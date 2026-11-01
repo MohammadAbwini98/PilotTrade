@@ -1,6 +1,6 @@
 # Capital.com Demo Integration Hardening: Technical Report
 
-Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `master` at `c1679ba`.
+Date: 2026-10-31. Branch: `feature/capital-demo-readonly-hardening`, based on `master` at `c1679ba`. Kept as a record of that date; the current state is in `DEMO_ACCEPTANCE_09244cf.md`.
 
 **Result: read-only Demo is NO-GO.** The owner's authenticated run on `c3adf2d` failed its quote step, and the fix has not run against the real API. Demo execution is disabled and Live is locked.
 
