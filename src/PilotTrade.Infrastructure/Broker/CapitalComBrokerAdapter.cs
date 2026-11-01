@@ -3,6 +3,7 @@ namespace PilotTrade.Infrastructure.Broker;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PilotTrade.Application.Services;
 using PilotTrade.Domain;
 using PilotTrade.Domain.Broker;
 using PilotTrade.Domain.Security;
@@ -398,8 +399,9 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
                     timezoneOffset ??= await ReadTimezoneOffsetAsync(ct);
                     updated = CapitalComJson.Utc(snapshot, "updateTime") - TimeSpan.FromHours((double)timezoneOffset.Value);
                 }
-                quotes.Add(new MarketQuote(epic, bid, offer, (bid + offer) / 2m, offer - bid,
-                    updated, _clock.UtcNow, delayed ? FeedHealth.Stale : FeedHealth.Healthy));
+                var now = _clock.UtcNow;
+                var health = delayed ? FeedHealth.Stale : MarketDataPolicy.Default.FeedHealthAt(updated, now);
+                quotes.Add(new MarketQuote(epic, bid, offer, (bid + offer) / 2m, offer - bid, updated, now, health));
             }
         }
         return quotes;

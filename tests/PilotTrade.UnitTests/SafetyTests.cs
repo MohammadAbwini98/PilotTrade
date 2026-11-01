@@ -132,7 +132,7 @@ public static class TestData
 
     public static RiskEvaluationRequest RiskRequest(IClock clock, BrokerAccount account, InstrumentMetadata meta, MarketQuote quote)
     {
-        var policy = new RiskPolicy("p", TradingEnvironment.Demo, "SIM-ACC", 100m, 1m, 500m, 10000m, 10000m, 5000m, 5, 10, 80m, 100m, 10, TimeSpan.FromMinutes(5), 0.001m, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5), null, new[]{"EURUSD"}, Array.Empty<string>(), true, 200m, "UTC", clock.UtcNow);
+        var policy = new RiskPolicy("p", TradingEnvironment.Demo, "SIM-ACC", 100m, 1m, 500m, 10000m, 10000m, 5000m, 5, 10, 80m, 100m, 10, TimeSpan.FromMinutes(5), SpreadLimits.DefaultPercent, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5), null, new[]{"EURUSD"}, Array.Empty<string>(), true, 200m, "UTC", clock.UtcNow);
         var intent = Intent(clock);
         var preview = new OrderPreview(intent, 1.1m, 10m, 5m, 0m, 2m, RiskDecision.Approved, Array.Empty<string>(), clock.UtcNow);
         return new RiskEvaluationRequest(intent, preview, policy, account, meta, quote, Array.Empty<Position>(), Array.Empty<WorkingOrder>(), clock.UtcNow);

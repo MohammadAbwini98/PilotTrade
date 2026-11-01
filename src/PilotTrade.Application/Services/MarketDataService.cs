@@ -5,9 +5,16 @@ using PilotTrade.Domain;
 using PilotTrade.Domain.Broker;
 using PilotTrade.Domain.Market;
 
-public sealed record MarketDataPolicy(TimeSpan MaxQuoteAge, decimal MaxSpreadPercent, int MinClosedCandles, int MaxCandleAgeInBars)
+public sealed record MarketDataPolicy(TimeSpan MaxQuoteAge, IReadOnlyDictionary<InstrumentAssetClass, decimal> MaxSpreadPercent, int MinClosedCandles, int MaxCandleAgeInBars)
 {
-    public static MarketDataPolicy Default { get; } = new(TimeSpan.FromSeconds(60), 5m, 21, 3);
+    public static MarketDataPolicy Default { get; } = new(TimeSpan.FromSeconds(60), SpreadLimits.DefaultPercent, 21, 3);
+
+    // The health a source timestamp supports. A wrong time zone conversion would show as a future timestamp.
+    public FeedHealth FeedHealthAt(DateTimeOffset sourceTimestampUtc, DateTimeOffset nowUtc)
+    {
+        var age = nowUtc - sourceTimestampUtc;
+        return age > MaxQuoteAge ? FeedHealth.Stale : age < -MaxQuoteAge ? FeedHealth.Unknown : FeedHealth.Healthy;
+    }
 }
 
 // Any missing or invalid input raises MarketDataRejectedException, which callers report as NO_TRADE.
@@ -34,7 +41,7 @@ public sealed class MarketDataService : IMarketDataService
 
             var quotes = await _broker.GetQuotesAsync(new[] { epic }, ct);
             var quote = quotes.FirstOrDefault(q => q.Epic == epic) ?? throw new MarketDataRejectedException("No quote");
-            ValidateQuote(epic, quote);
+            ValidateQuote(epic, quote, meta.AssetClass);
 
             var candlesByTf = new Dictionary<string, IReadOnlyList<Candle>>();
             var indicators = new Dictionary<string, decimal>();
@@ -57,7 +64,7 @@ public sealed class MarketDataService : IMarketDataService
         }
     }
 
-    private void ValidateQuote(string epic, MarketQuote quote)
+    private void ValidateQuote(string epic, MarketQuote quote, InstrumentAssetClass assetClass)
     {
         void Reject(FeedHealth health, string reason)
         {
@@ -65,14 +72,14 @@ public sealed class MarketDataService : IMarketDataService
             throw new MarketDataRejectedException(reason);
         }
 
-        if (quote.Health != FeedHealth.Healthy) Reject(quote.Health, "Feed unhealthy");
         if (quote.Bid <= 0 || quote.Ask <= 0) Reject(FeedHealth.Unknown, "Quote price invalid");
         if (quote.Ask < quote.Bid) Reject(FeedHealth.Unknown, "Quote crossed");
-        var age = _clock.UtcNow - quote.SourceTimestampUtc;
-        if (age > _policy.MaxQuoteAge) Reject(FeedHealth.Stale, "Stale quote");
-        if (age < -_policy.MaxQuoteAge) Reject(FeedHealth.Unknown, "Quote timestamp in the future");
-        var mid = (quote.Bid + quote.Ask) / 2m;
-        if ((quote.Ask - quote.Bid) / mid * 100m > _policy.MaxSpreadPercent) Reject(FeedHealth.Healthy, "Spread too wide");
+        var timestampHealth = _policy.FeedHealthAt(quote.SourceTimestampUtc, _clock.UtcNow);
+        if (timestampHealth == FeedHealth.Stale) Reject(FeedHealth.Stale, "Stale quote");
+        if (timestampHealth != FeedHealth.Healthy) Reject(timestampHealth, "Quote timestamp in the future");
+        if (quote.Health != FeedHealth.Healthy) Reject(quote.Health, "Feed unhealthy");
+        if (!_policy.MaxSpreadPercent.TryGetValue(assetClass, out var maxSpread)) Reject(FeedHealth.Healthy, "Spread limit unknown");
+        if (SpreadLimits.PercentOfMid(quote.Bid, quote.Ask) > maxSpread) Reject(FeedHealth.Healthy, "Spread too wide");
     }
 
     private IReadOnlyList<Candle> ValidateCandles(string epic, string timeframe, IReadOnlyList<Candle> candles)

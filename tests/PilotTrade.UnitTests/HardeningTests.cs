@@ -229,6 +229,55 @@ public class RiskFailClosedTests
     [Fact]
     public async Task MissingStopRules_Rejected() =>
         (await Evaluate(meta: m => m with { MinStopDistance = null })).Reasons.Should().Contain("Stop rules missing");
+
+    [Theory]
+    [InlineData(InstrumentAssetClass.Fx, 0.01, false)]
+    [InlineData(InstrumentAssetClass.Fx, 0.1, true)]
+    [InlineData(InstrumentAssetClass.CryptoCfd, 0.5, false)]
+    [InlineData(InstrumentAssetClass.CryptoCfd, 1.5, true)]
+    [InlineData(InstrumentAssetClass.Commodity, 0.1, false)]
+    [InlineData(InstrumentAssetClass.Commodity, 0.3, true)]
+    public void SpreadLimit_DependsOnTheAssetClass(InstrumentAssetClass assetClass, double spreadPercent, bool rejected)
+    {
+        var reasons = EvaluateSpread(assetClass, (decimal)spreadPercent);
+        reasons.Any(r => r.StartsWith("Spread ")).Should().Be(rejected);
+    }
+
+    [Theory]
+    [InlineData(InstrumentAssetClass.Unknown)]
+    [InlineData(InstrumentAssetClass.Other)]
+    public void SpreadLimit_UnknownClass_IsRejected(InstrumentAssetClass assetClass) =>
+        EvaluateSpread(assetClass, 0.001m).Should().Contain($"Spread limit unknown: {assetClass}");
+
+    [Fact]
+    public void Quote_FromTheFuture_IsRejected()
+    {
+        var request = SpreadRequest(InstrumentAssetClass.Fx, 0.001m);
+        var future = request with { Quote = request.Quote with { SourceTimestampUtc = _clock.UtcNow.AddMinutes(5) } };
+        new RiskEngine().Evaluate(future).Reasons.Should().Contain("Price timestamp in the future");
+    }
+
+    [Fact]
+    public void Quote_Crossed_IsRejected()
+    {
+        var request = SpreadRequest(InstrumentAssetClass.Fx, 0.001m);
+        var crossed = request with { Quote = request.Quote with { Bid = 1.2m, Ask = 1.1m } };
+        new RiskEngine().Evaluate(crossed).Reasons.Should().Contain("Quote invalid");
+    }
+
+    private IReadOnlyList<string> EvaluateSpread(InstrumentAssetClass assetClass, decimal spreadPercent) =>
+        new RiskEngine().Evaluate(SpreadRequest(assetClass, spreadPercent)).Reasons;
+
+    private RiskEvaluationRequest SpreadRequest(InstrumentAssetClass assetClass, decimal spreadPercent)
+    {
+        var broker = new SimulatedBrokerAdapter(TradingEnvironment.Demo, _clock, new GuidIdGenerator());
+        var account = broker.GetAccountAsync("SIM-ACC", CancellationToken.None).GetAwaiter().GetResult();
+        var meta = broker.GetInstrumentAsync("EURUSD", "SIM-ACC", CancellationToken.None).GetAwaiter().GetResult()! with { AssetClass = assetClass };
+        const decimal mid = 100m;
+        var half = mid * spreadPercent / 200m;
+        var quote = new MarketQuote("EURUSD", mid - half, mid + half, mid, half * 2m, _clock.UtcNow, _clock.UtcNow, FeedHealth.Healthy);
+        return TestData.RiskRequest(_clock, account, meta, quote);
+    }
 }
 
 public class MarketDataNoTradeTests
@@ -245,7 +294,8 @@ public class MarketDataNoTradeTests
         public bool ExecutionEnabled => false;
         public Task<InstrumentMetadata?> GetInstrumentAsync(string epic, string accountId, CancellationToken ct) => Failure is null ? Task.FromResult(Meta) : throw Failure;
         public Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IEnumerable<string> epics, CancellationToken ct) => Task.FromResult<IReadOnlyList<MarketQuote>>(Quote is null ? Array.Empty<MarketQuote>() : new[] { Quote });
-        public Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct) => Task.FromResult(Candles);
+        public Dictionary<string, IReadOnlyList<Candle>>? CandlesByTimeframe;
+        public Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct) => Task.FromResult(CandlesByTimeframe?[timeframe] ?? Candles);
         public Task<BrokerSession> CreateSessionAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<BrokerAccountSummary>> GetAccountsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<BrokerAccount> GetAccountAsync(string accountId, CancellationToken ct) => throw new NotSupportedException();
@@ -307,6 +357,76 @@ public class MarketDataNoTradeTests
 
     [Fact]
     public Task DelayedFeed() { var f = Healthy(); f.Quote = f.Quote! with { Health = FeedHealth.Stale }; return ExpectRejected(f, "unhealthy"); }
+
+    [Theory]
+    [InlineData(-61, FeedHealth.Stale)]
+    [InlineData(-60, FeedHealth.Healthy)]
+    [InlineData(0, FeedHealth.Healthy)]
+    [InlineData(60, FeedHealth.Healthy)]
+    [InlineData(61, FeedHealth.Unknown)]
+    public void SourceTimestamp_DecidesTheHealth(int offsetSeconds, FeedHealth expected) =>
+        MarketDataPolicy.Default.FeedHealthAt(_clock.UtcNow.AddSeconds(offsetSeconds), _clock.UtcNow).Should().Be(expected);
+
+    [Fact]
+    public async Task StaleTimestamp_ReportsTheFeedAsStale_EvenWhenTheQuoteClaimsHealthy()
+    {
+        var f = Healthy(); f.Quote = f.Quote! with { SourceTimestampUtc = _clock.UtcNow.AddMinutes(-5), Health = FeedHealth.Healthy };
+        var service = new MarketDataService(f, _clock);
+        await Assert.ThrowsAsync<MarketDataRejectedException>(() => service.BuildSnapshotAsync("A", TradingEnvironment.Demo, "EURUSD", 1, new[] { "5m" }, CancellationToken.None));
+        service.GetFeedHealth("EURUSD").Should().Be(FeedHealth.Stale);
+    }
+
+    [Fact]
+    public async Task HealthyFeed_TurnsStale_AsTimePasses()
+    {
+        var f = Healthy();
+        var service = new MarketDataService(f, _clock);
+        await service.BuildSnapshotAsync("A", TradingEnvironment.Demo, "EURUSD", 1, new[] { "5m" }, CancellationToken.None);
+        service.GetFeedHealth("EURUSD").Should().Be(FeedHealth.Healthy);
+        _clock.UtcNow = _clock.UtcNow.AddSeconds(61);
+        service.GetFeedHealth("EURUSD").Should().Be(FeedHealth.Stale);
+    }
+
+    [Fact]
+    public void NoQuoteYet_IsUnknown_NotHealthy() =>
+        new MarketDataService(Healthy(), _clock).GetFeedHealth("EURUSD").Should().Be(FeedHealth.Unknown);
+
+    [Fact]
+    public Task NoSpreadLimitForTheClass() { var f = Healthy(); f.Meta = f.Meta! with { AssetClass = InstrumentAssetClass.Unknown }; return ExpectRejected(f, "Spread limit unknown"); }
+
+    [Fact]
+    public async Task CryptoSpread_PassesWhereTheSameSpreadOnFxFails()
+    {
+        var f = Healthy();
+        f.Quote = f.Quote! with { Bid = 100m, Ask = 100.5m };
+        await ExpectRejected(f, "Spread too wide");
+        f.Meta = f.Meta! with { AssetClass = InstrumentAssetClass.CryptoCfd };
+        (await Build(f)).Epic.Should().Be("EURUSD");
+    }
+
+    [Fact]
+    public async Task MultipleTimeframes_AreAllReturned()
+    {
+        var f = Healthy();
+        var hour = TimeSpan.FromHours(1);
+        var start = _clock.UtcNow - hour * 30;
+        var fiveMinute = f.Candles;
+        var hourly = Enumerable.Range(0, 30).Select(i => new Candle("EURUSD", "1h", start + hour * i, start + hour * (i + 1), true, 1.1m, 1.2m, 1.0m, 1.1m, 10m)).ToList();
+        f.CandlesByTimeframe = new() { ["5m"] = fiveMinute, ["1h"] = hourly };
+        var bundle = await new MarketDataService(f, _clock).BuildSnapshotAsync("A", TradingEnvironment.Demo, "EURUSD", 1, new[] { "5m", "1h" }, CancellationToken.None);
+        bundle.CandlesByTimeframe.Keys.Should().BeEquivalentTo("5m", "1h");
+        bundle.Indicators.Should().ContainKeys("5m.ema20", "1h.ema20");
+    }
+
+    [Fact]
+    public async Task OneBadTimeframe_RejectsTheWholeSnapshot()
+    {
+        var f = Healthy();
+        f.CandlesByTimeframe = new() { ["5m"] = f.Candles, ["1h"] = Array.Empty<Candle>() };
+        var rejected = await Assert.ThrowsAsync<MarketDataRejectedException>(() =>
+            new MarketDataService(f, _clock).BuildSnapshotAsync("A", TradingEnvironment.Demo, "EURUSD", 1, new[] { "5m", "1h" }, CancellationToken.None));
+        rejected.Message.Should().Contain("1h candle history insufficient");
+    }
 
     [Fact]
     public Task TooFewCandles() { var f = Healthy(); f.Candles = f.Candles.Take(5).ToList(); return ExpectRejected(f, "insufficient"); }

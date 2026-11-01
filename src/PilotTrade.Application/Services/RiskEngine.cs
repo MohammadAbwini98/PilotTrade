@@ -2,6 +2,7 @@ namespace PilotTrade.Application.Services;
 
 using PilotTrade.Domain;
 using PilotTrade.Domain.Broker;
+using PilotTrade.Domain.Market;
 using PilotTrade.Domain.Risk;
 
 public sealed class RiskEngine : IRiskEngine
@@ -23,6 +24,7 @@ public sealed class RiskEngine : IRiskEngine
         // Feed freshness
         var priceAge = now - quote.SourceTimestampUtc;
         if (priceAge > policy.MaxPriceAge) reasons.Add($"Stale price: {priceAge}");
+        if (priceAge < -policy.MaxPriceAge) reasons.Add("Price timestamp in the future");
         if (quote.Health != FeedHealth.Healthy) reasons.Add($"Feed unhealthy: {quote.Health}");
 
         // Signal age
@@ -49,7 +51,9 @@ public sealed class RiskEngine : IRiskEngine
         }
 
         // Spread
-        if (quote.Spread > policy.MaxSpread) reasons.Add($"Spread {quote.Spread} > max {policy.MaxSpread}");
+        if (quote.Bid <= 0 || quote.Ask < quote.Bid) reasons.Add("Quote invalid");
+        else if (!policy.MaxSpreadPercent.TryGetValue(inst.AssetClass, out var maxSpread)) reasons.Add($"Spread limit unknown: {inst.AssetClass}");
+        else if (SpreadLimits.PercentOfMid(quote.Bid, quote.Ask) is var spread && spread > maxSpread) reasons.Add($"Spread {spread:F4}% > max {maxSpread}%");
 
         // Protective stop
         if (policy.RequireProtectiveStop && intent.StopLevel is null) reasons.Add("Protective stop required");

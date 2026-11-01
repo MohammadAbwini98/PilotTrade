@@ -398,6 +398,17 @@ public class CapitalComContractTests
         q.Health.Should().Be(FeedHealth.Healthy);
     }
 
+    [Theory]
+    [InlineData("2026-10-31T11:58:00", 0, FeedHealth.Stale)]
+    [InlineData("2026-10-31T12:05:00", 0, FeedHealth.Unknown)]
+    [InlineData("2026-10-31T12:00:00", 5, FeedHealth.Stale)]
+    public async Task Quotes_HealthFollowsTheSourceTimestampAndDelay(string updateTimeUtc, int delayTime, FeedHealth expected)
+    {
+        _fake.MarketsJson = Quote($"{{\"bid\":1,\"offer\":1.0001,\"updateTimeUTC\":\"{updateTimeUtc}\",\"delayTime\":{delayTime}}}", "EURUSD");
+        var q = (await (await Adapter()).GetQuotesAsync(new[] { "EURUSD" }, CancellationToken.None)).Single();
+        q.Health.Should().Be(expected);
+    }
+
     // The response sample documented for GET /markets?epics=, time zone comes from the documented GET /session sample.
     private const string DocumentedEpicsSample = """
         {"marketDetails":[{
@@ -844,6 +855,69 @@ public class CapitalComContractTests
         _fake.PricesJson = """{"prices":[{"snapshotTimeUTC":"2026-10-30T10:00:00","openPrice":{"bid":1,"ask":1.1},"closePrice":{"bid":1,"ask":1.1},"highPrice":{"bid":1.2,"ask":1.3},"lowPrice":{"bid":0.9,"ask":1}}]}""";
         var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
         evidence.Steps.Single(s => s.Name == "candles").Passed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Probe_RunsTheApplicationSnapshotPath_ForBothTimeframes()
+    {
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var step = evidence.Steps.Single(s => s.Name == "marketSnapshot");
+        step.Passed.Should().BeTrue();
+        step.Detail.Should().Be("5m=40 closed candle(s); 1h=40 closed candle(s)");
+        _fake.Requests.Should().Contain(r => r.PathAndQuery.Contains("resolution=HOUR"));
+    }
+
+    [Fact]
+    public async Task Probe_ClosedMarket_FailsTheSnapshot_WithTheSafeReason()
+    {
+        _fake.MarketDetails["EURUSD"] = CapitalFake.MarketDetail("EURUSD", status: "CLOSED");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var step = evidence.Steps.Single(s => s.Name == "marketSnapshot");
+        step.Passed.Should().BeFalse();
+        step.Detail.Should().Be("NO_TRADE: Instrument not open: Closed");
+    }
+
+    [Fact]
+    public async Task Probe_RecordsTheSpreadAndItsLimit_ForTheAssetClass()
+    {
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var quote = evidence.Steps.Single(s => s.Name == "quote");
+        quote.Detail.Should().Contain("spreadPercent=0.0182").And.Contain("spreadLimitPercent=0.05").And.Contain("spreadWithinPolicy=True");
+    }
+
+    [Fact]
+    public async Task Probe_SpreadWideForTheClass_FailsTheQuoteStep()
+    {
+        _fake.MarketsJson = Quote($"{{\"bid\":1,\"offer\":1.001,\"updateTimeUTC\":\"{_clock.UtcNow.UtcDateTime:yyyy-MM-ddTHH:mm:ss}\"}}", "EURUSD");
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var quote = evidence.Steps.Single(s => s.Name == "quote");
+        quote.Passed.Should().BeFalse();
+        quote.Detail.Should().Contain("spreadWithinPolicy=False");
+    }
+
+    [Fact]
+    public async Task Probe_ReportsMissingBars_WithoutFailingOnThem()
+    {
+        var now = _clock.UtcNow.UtcDateTime;
+        var last = new DateTime(now.Ticks - now.Ticks % TimeSpan.FromMinutes(5).Ticks, DateTimeKind.Utc);
+        var offsets = Enumerable.Range(1, 30).Append(33);
+        var prices = offsets.Reverse().Select(i => $$$"""{"snapshotTimeUTC":"{{{last.AddMinutes(-5 * i):yyyy-MM-ddTHH:mm:ss}}}","openPrice":{"bid":1,"ask":1.1},"closePrice":{"bid":1,"ask":1.1},"highPrice":{"bid":1.2,"ask":1.3},"lowPrice":{"bid":0.9,"ask":1}}""");
+        _fake.PricesJson = $$"""{"prices":[{{string.Join(",", prices)}}]}""";
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        var candles = evidence.Steps.Single(s => s.Name == "candles");
+        candles.Detail.Should().Contain("missingBars=2");
+        candles.Passed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Probe_SearchFailure_FailsItsStep()
+    {
+        // The quote step reads the same path first, so it is let through.
+        Func<HttpResponseMessage?> refused = () => CapitalFake.Json(HttpStatusCode.BadRequest, "{\"errorCode\":\"error.invalid.searchTerm\"}");
+        _fake.Script("GET /api/v1/markets", () => null, refused);
+        var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);
+        evidence.Steps.Single(s => s.Name == "instrumentSearch").Passed.Should().BeFalse();
+        evidence.AllPassed.Should().BeFalse();
     }
 
     [Fact]

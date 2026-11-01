@@ -20,7 +20,7 @@ public sealed record RiskPolicy(
     decimal MinFreeMarginBufferAccountCurrency,
     int MaxOrdersPerHour,
     TimeSpan TradeCooldown,
-    decimal MaxSpread,
+    IReadOnlyDictionary<InstrumentAssetClass, decimal> MaxSpreadPercent,
     TimeSpan MaxPriceAge,
     TimeSpan MaxSignalAge,
     decimal? MaxVolatility,

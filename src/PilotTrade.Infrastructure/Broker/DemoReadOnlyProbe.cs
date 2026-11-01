@@ -1,9 +1,11 @@
 namespace PilotTrade.Infrastructure.Broker;
 
+using System.Globalization;
 using System.Reflection;
 using PilotTrade.Application.Services;
 using PilotTrade.Domain;
 using PilotTrade.Domain.Broker;
+using PilotTrade.Domain.Market;
 
 public sealed record DemoProbeStep(string Name, bool Passed, string Detail);
 
@@ -29,6 +31,7 @@ public sealed record DemoProbeEvidence(
 public sealed class DemoReadOnlyProbe
 {
     private const string CandleTimeframe = "5m";
+    private static readonly string[] SnapshotTimeframes = { "5m", "1h" };
     private readonly IBrokerAdapter _broker;
     private readonly IClock _clock;
     private readonly MarketDataPolicy _policy = MarketDataPolicy.Default;
@@ -56,6 +59,12 @@ public sealed class DemoReadOnlyProbe
                 steps.Add(new DemoProbeStep(name, false, FailureDetail(ex)));
                 return null;
             }
+            catch (MarketDataRejectedException ex)
+            {
+                // These reasons are fixed text that carries no broker values.
+                steps.Add(new DemoProbeStep(name, false, $"NO_TRADE: {ex.Message}"));
+                return null;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // An unexpected type only: the exception message could quote broker data.
@@ -74,6 +83,7 @@ public sealed class DemoReadOnlyProbe
         }
 
         var status = MarketStatus.Unknown;
+        var assetClass = InstrumentAssetClass.Unknown;
         string? instrumentEpic = null;
         if (!string.IsNullOrWhiteSpace(target))
         {
@@ -88,6 +98,7 @@ public sealed class DemoReadOnlyProbe
                 m =>
                 {
                     status = m.Status;
+                    assetClass = m.AssetClass;
                     instrumentEpic = m.Epic;
                     var rulesValid = m.MinDealSize > 0 && m.MaxDealSize >= m.MinDealSize && m.DealSizeStep > 0 && m.TickSize > 0 && m.MinStopDistance is not null && m.MaxStopDistance is not null;
                     return (m.Status != MarketStatus.Unknown && m.QuoteCurrency.Length > 0 && rulesValid,
@@ -101,8 +112,15 @@ public sealed class DemoReadOnlyProbe
         // Freshness can only be proven while the market is open, so a closed market never passes these two steps.
         var marketOpen = status == MarketStatus.Open;
         var now = _clock.UtcNow;
-        await Step("quote", () => _broker.GetQuotesAsync(new[] { epic }, ct), q => DescribeQuote(q.FirstOrDefault(x => x.Epic == epic), now, marketOpen, status));
+        await Step("quote", () => _broker.GetQuotesAsync(new[] { epic }, ct), q => DescribeQuote(q.FirstOrDefault(x => x.Epic == epic), now, marketOpen, status, assetClass));
         await Step("candles", () => _broker.GetHistoryAsync(epic, CandleTimeframe, 50, ct), c => DescribeCandles(c, epic, now, marketOpen, status));
+        await Step("instrumentSearch", () => _broker.SearchInstrumentsAsync(epic, 20, ct), r => (true, $"{r.Count} result(s); foundEpic={r.Any(x => x.Epic == epic)}"));
+
+        // The application's own path to market data, which must agree with the separate checks above.
+        if (!string.IsNullOrWhiteSpace(target))
+            await Step("marketSnapshot",
+                () => new MarketDataService(_broker, _clock, _policy).BuildSnapshotAsync(target, _broker.Environment, epic, 1, SnapshotTimeframes, ct),
+                s => (true, string.Join("; ", s.CandlesByTimeframe.Select(tf => $"{tf.Key}={tf.Value.Count} closed candle(s)"))));
 
         var assembly = typeof(DemoReadOnlyProbe).Assembly;
         return new DemoProbeEvidence(now, _broker.Environment.ToString(), _broker.GetType().Name,
@@ -120,16 +138,20 @@ public sealed class DemoReadOnlyProbe
             ? $"{ex.Kind}: {ex.Message[CapitalComJson.MalformedPrefix.Length..]}"
             : ex.Kind.ToString();
 
-    private (bool, string) DescribeQuote(MarketQuote? quote, DateTimeOffset now, bool marketOpen, MarketStatus status)
+    private (bool, string) DescribeQuote(MarketQuote? quote, DateTimeOffset now, bool marketOpen, MarketStatus status, InstrumentAssetClass assetClass)
     {
         if (quote is null) return (false, "no quote");
         var age = now - quote.SourceTimestampUtc;
-        var fresh = age <= _policy.MaxQuoteAge && age >= -_policy.MaxQuoteAge;
+        var fresh = _policy.FeedHealthAt(quote.SourceTimestampUtc, now) == FeedHealth.Healthy;
         var valid = quote.Bid > 0 && quote.Ask >= quote.Bid;
-        var spreadOk = valid && (quote.Ask - quote.Bid) / ((quote.Bid + quote.Ask) / 2m) * 100m <= _policy.MaxSpreadPercent;
+        var spread = valid ? Math.Round(SpreadLimits.PercentOfMid(quote.Bid, quote.Ask), 4) : (decimal?)null;
+        decimal? limit = _policy.MaxSpreadPercent.TryGetValue(assetClass, out var found) ? found : null;
+        var spreadOk = spread <= limit;
         return (marketOpen && valid && spreadOk && fresh && quote.Health == FeedHealth.Healthy,
-            $"marketStatus={status}; ageSeconds={(int)age.TotalSeconds}; fresh={fresh}; pricesValid={valid}; spreadWithinPolicy={spreadOk}; health={quote.Health}");
+            $"marketStatus={status}; ageSeconds={(int)age.TotalSeconds}; fresh={fresh}; pricesValid={valid}; spreadPercent={Percent(spread)}; spreadLimitPercent={Percent(limit)}; spreadWithinPolicy={spreadOk}; health={quote.Health}");
     }
+
+    private static string Percent(decimal? value) => value is { } v ? (v / 1.0000000000m).ToString("0.####", CultureInfo.InvariantCulture) : "unknown";
 
     private (bool, string) DescribeCandles(IReadOnlyList<Candle> candles, string epic, DateTimeOffset now, bool marketOpen, MarketStatus status)
     {
@@ -141,7 +163,9 @@ public sealed class DemoReadOnlyProbe
         var age = now - last.CloseTimeUtc;
         var fresh = age <= (last.CloseTimeUtc - last.OpenTimeUtc) * _policy.MaxCandleAgeInBars;
         var enough = closed.Count >= _policy.MinClosedCandles;
+        // Reported rather than gated: a daily maintenance break is a legitimate gap on FX and gold.
+        var missingBars = closed.Zip(closed.Skip(1)).Sum(p => Math.Max(0, (int)((p.Second.OpenTimeUtc - p.First.OpenTimeUtc) / (last.CloseTimeUtc - last.OpenTimeUtc)) - 1));
         return (marketOpen && ordered && valid && fresh && enough,
-            $"marketStatus={status}; {candles.Count} candle(s); latestCloseAgeSeconds={(int)age.TotalSeconds}; fresh={fresh}; ordered={ordered}; valuesValid={valid}; enoughHistory={enough}");
+            $"marketStatus={status}; {candles.Count} candle(s); latestCloseAgeSeconds={(int)age.TotalSeconds}; fresh={fresh}; ordered={ordered}; valuesValid={valid}; enoughHistory={enough}; missingBars={missingBars}");
     }
 }
