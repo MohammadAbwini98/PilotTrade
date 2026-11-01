@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using PilotTrade.Api;
+using PilotTrade.Application.Services;
 
 [Trait("Category", "OwnerAuthorization")]
 public sealed class SecurityEndpointTests : IDisposable
@@ -265,6 +266,21 @@ public sealed class DemoApiFlowTests : IDisposable
         (await SnapshotAsync(client, "EURUSD", version)).GetProperty("outcome").GetString().Should().Be("SNAPSHOT_READY");
         _host.Capital.Requests.Select(r => r.Path).Should().Contain("/api/v1/prices/EURUSD").And.Contain("/api/v1/markets/EURUSD");
         _host.Capital.Requests.Should().Contain(r => r.PathAndQuery.Contains("resolution=HOUR"));
+        _host.Capital.OrderRequests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Reconciliation_ComparesNonEmptyBrokerHoldings_ThroughTheRealAdapter()
+    {
+        await _host.StoreDemoCredentialsAsync();
+        var reconciliation = _host.Services.GetRequiredService<OrderReconciliationService>();
+        var journal = _host.Services.GetRequiredService<IOrderJournal>();
+
+        (await reconciliation.CompareWithBrokerAsync(TradingEnvironment.Demo, "ACC-B", CancellationToken.None)).UnknownAtBroker.Should().Be(2);
+
+        var now = DateTimeOffset.UtcNow;
+        await journal.CreateAsync(new OrderJournalEntry("cmd_r", "intent_r", TradingEnvironment.Demo, "ACC-B", "GOLD", OrderState.Reconciled, "d", "snap", null, "o_r", "deal-GOLD,wo-GOLD", now, now, now, null, now, "c"), CancellationToken.None);
+        (await reconciliation.CompareWithBrokerAsync(TradingEnvironment.Demo, "ACC-B", CancellationToken.None)).Should().Be(new ReconciliationSummary(0, 0, 0, 0));
         _host.Capital.OrderRequests.Should().BeEmpty();
     }
 

@@ -28,4 +28,5 @@ public interface IOrderJournal
     Task<OrderJournalEntry?> GetAsync(string commandId, CancellationToken ct);
     Task<OrderJournalEntry?> FindByIntentAsync(string intentId, CancellationToken ct);
     Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct);
+    Task<IReadOnlyList<OrderJournalEntry>> ListAsync(TradingEnvironment env, string accountId, CancellationToken ct);
 }

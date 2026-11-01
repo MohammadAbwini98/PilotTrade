@@ -3,10 +3,12 @@ using PilotTrade.Infrastructure.Broker;
 
 namespace PilotTrade.UnitTests;
 
-// A broker whose submission behavior is scripted; reads are not used by these tests.
+// A broker whose submission and holdings are scripted; other reads are not used by these tests.
 internal sealed class ScriptedBroker : IBrokerAdapter
 {
     public int Submissions { get; private set; }
+    public Func<IReadOnlyList<Position>> OnPositions { get; init; } = () => Array.Empty<Position>();
+    public Func<IReadOnlyList<WorkingOrder>> OnOrders { get; init; } = () => Array.Empty<WorkingOrder>();
     public bool ExecutionEnabled { get; init; } = true;
     public TradingEnvironment Environment => TradingEnvironment.Demo;
     public Func<OrderIntent, BrokerSubmissionResult>? OnSubmit { get; init; }
@@ -25,8 +27,8 @@ internal sealed class ScriptedBroker : IBrokerAdapter
     public Task<IReadOnlyList<InstrumentSummary>> SearchInstrumentsAsync(string query, int limit, CancellationToken ct) => throw new NotSupportedException();
     public Task<InstrumentMetadata?> GetInstrumentAsync(string epic, string accountId, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<Candle>> GetHistoryAsync(string epic, string timeframe, int count, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<WorkingOrder>> GetWorkingOrdersAsync(string accountId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<Position>> GetPositionsAsync(string accountId, CancellationToken ct) => Task.FromResult(OnPositions());
+    public Task<IReadOnlyList<WorkingOrder>> GetWorkingOrdersAsync(string accountId, CancellationToken ct) => Task.FromResult(OnOrders());
     public Task<bool> CancelOrderAsync(string orderId, string accountId, CancellationToken ct) => throw new NotSupportedException();
     public Task<bool> ClosePositionAsync(string positionId, decimal? size, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<MarketQuote>> GetQuotesAsync(IEnumerable<string> epics, CancellationToken ct) => throw new NotSupportedException();
@@ -190,6 +192,139 @@ public class ExecutionIntegrityTests
 
         summary.Should().Be(new ReconciliationSummary(0, 3));
         (await journal.ListUncertainAsync(TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None)).Should().HaveCount(3);
+    }
+
+    private IReadOnlyList<Position> Holding(params string[] ids) =>
+        ids.Select(id => new Position(id, "SIM-ACC", TradingEnvironment.Demo, "EURUSD", OrderSide.Buy, 1m, 1.1m, 1.1m, 0m, null, null, _clock.UtcNow, _clock.UtcNow, "USD")).ToList();
+
+    private IReadOnlyList<WorkingOrder> Pending(params string[] ids) =>
+        ids.Select(id => new WorkingOrder(id, "SIM-ACC", TradingEnvironment.Demo, "EURUSD", OrderSide.Buy, OrderType.Limit, 1m, 1.1m, null, null, _clock.UtcNow, _clock.UtcNow)).ToList();
+
+    private Task<ReconciliationSummary> Compare(ScriptedBroker broker, InMemoryOrderJournal journal) =>
+        new OrderReconciliationService(broker, journal, _clock).CompareWithBrokerAsync(TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None);
+
+    private Task<InMemoryOrderJournal> JournalWith(params OrderJournalEntry[] entries) => Task.Run(async () =>
+    {
+        var journal = new InMemoryOrderJournal();
+        foreach (var e in entries) await journal.CreateAsync(e, CancellationToken.None);
+        return journal;
+    });
+
+    [Fact]
+    public async Task Compare_MatchesNonEmptyHoldings_IncludingMultiDealEntries()
+    {
+        var journal = await JournalWith(Entry("a", OrderState.Reconciled, "o_a") with { BrokerDealId = "d1,d2" }, Entry("b", OrderState.Confirmed, "o_b") with { BrokerDealId = "w1" });
+        var broker = new ScriptedBroker { OnPositions = () => Holding("d1", "d2"), OnOrders = () => Pending("w1") };
+        (await Compare(broker, journal)).Should().Be(new ReconciliationSummary(0, 0, 0, 0));
+        broker.Submissions.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Compare_FlagsBrokerItemsTheJournalDoesNotKnow()
+    {
+        var broker = new ScriptedBroker { OnPositions = () => Holding("manual"), OnOrders = () => Pending("wo") };
+        (await Compare(broker, new InMemoryOrderJournal())).UnknownAtBroker.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Compare_FlagsJournaledDealsMissingAtTheBroker()
+    {
+        var journal = await JournalWith(Entry("a", OrderState.Reconciled, "o_a") with { BrokerDealId = "d1,d2" });
+        (await Compare(new ScriptedBroker { OnPositions = () => Holding("d1") }, journal)).MissingAtBroker.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Compare_IgnoresRejectedEntries_ButNotConfirmedOnesWithoutADeal()
+    {
+        var journal = await JournalWith(Entry("r", OrderState.Rejected, "o_r") with { BrokerDealId = "d9" }, Entry("c", OrderState.Confirmed, "o_c"));
+        (await Compare(new ScriptedBroker(), journal)).Should().Be(new ReconciliationSummary(0, 1, 0, 0));
+    }
+
+    [Fact]
+    public async Task Compare_BrokerReadFailure_IsNeverAnEmptyAccount()
+    {
+        var broker = new ScriptedBroker { OnOrders = () => throw new BrokerException(BrokerErrorKind.Unavailable, "down") };
+        await Assert.ThrowsAsync<BrokerException>(() => Compare(broker, new InMemoryOrderJournal()));
+    }
+
+    [Fact]
+    public async Task Reconcile_ResolvesBrokerPending_AndKeepsAnUnresolvedStatusUncertain()
+    {
+        var journal = await JournalWith(Entry("p", OrderState.BrokerPending, "o_p"), Entry("q", OrderState.BrokerPending, "o_q"), Entry("n", OrderState.BrokerPending, "o_n"));
+        var broker = new ScriptedBroker
+        {
+            OnConfirm = r => r switch
+            {
+                "o_p" => new BrokerSubmissionResult("", r, "d1", OrderState.Confirmed, null, _clock.UtcNow, _clock.UtcNow),
+                "o_q" => new BrokerSubmissionResult("", r, null, OrderState.Confirmed, null, _clock.UtcNow, _clock.UtcNow),
+                _ => new BrokerSubmissionResult("", r, null, OrderState.BrokerPending, null, _clock.UtcNow, null)
+            }
+        };
+        (await new OrderReconciliationService(broker, journal, _clock).ReconcileAsync(TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None))
+            .Should().Be(new ReconciliationSummary(1, 2));
+        (await journal.GetAsync("cmd_p", CancellationToken.None))!.State.Should().Be(OrderState.Reconciled);
+    }
+
+    private async Task<TestTradingControl> Startup(ScriptedBroker broker, InMemoryOrderJournal journal)
+    {
+        var control = new TestTradingControl();
+        control.State.ReconciliationComplete = true;
+        await new OrderReconciliationService(broker, journal, _clock).RunStartupAsync(control, TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None);
+        return control;
+    }
+
+    [Fact]
+    public async Task Startup_CompletesOnlyWhenBrokerAndJournalMatch()
+    {
+        var control = await Startup(new ScriptedBroker(), new InMemoryOrderJournal());
+        control.State.ReconciliationComplete.Should().BeTrue();
+        control.State.KillSwitchEngaged.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Startup_UncertainOrder_EngagesKillSwitch_AndStaysIncomplete()
+    {
+        var control = await Startup(new ScriptedBroker(), await JournalWith(Entry("a", OrderState.Unknown, null)));
+        control.State.ReconciliationComplete.Should().BeFalse();
+        control.State.KillSwitchEngaged.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Startup_UnknownBrokerPosition_StaysIncomplete_AndGatewayRefuses()
+    {
+        var broker = new ScriptedBroker { OnPositions = () => Holding("manual"), OnSubmit = _ => throw new InvalidOperationException("must not run") };
+        var journal = new InMemoryOrderJournal();
+        var control = await Startup(broker, journal);
+        control.State.ReconciliationComplete.Should().BeFalse();
+        control.State.SuspensionReason.Should().Contain("1 broker items");
+
+        var result = await new ExecutionGateway(broker, control, new InMemoryAuditLogger(), journal, _clock, new GuidIdGenerator()).ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+        result.FinalState.Should().Be(OrderState.Rejected);
+        broker.Submissions.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Startup_ExecutionDisabled_StaysIncomplete_WithoutReadingHoldings()
+    {
+        var control = await Startup(new ScriptedBroker { ExecutionEnabled = false, OnPositions = () => throw new InvalidOperationException("must not run") }, new InMemoryOrderJournal());
+        control.State.ReconciliationComplete.Should().BeFalse();
+        control.State.KillSwitchEngaged.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Startup_MissingCredentials_StaysIncomplete_WithoutTheKillSwitch()
+    {
+        var control = await Startup(new ScriptedBroker { OnPositions = () => throw new BrokerException(BrokerErrorKind.CredentialsMissing, "none") }, new InMemoryOrderJournal());
+        control.State.ReconciliationComplete.Should().BeFalse();
+        control.State.KillSwitchEngaged.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Startup_BrokerFailure_EngagesKillSwitch()
+    {
+        var control = await Startup(new ScriptedBroker { OnPositions = () => throw new BrokerException(BrokerErrorKind.Unavailable, "down") }, new InMemoryOrderJournal());
+        control.State.ReconciliationComplete.Should().BeFalse();
+        control.State.KillSwitchEngaged.Should().BeTrue();
     }
 }
 

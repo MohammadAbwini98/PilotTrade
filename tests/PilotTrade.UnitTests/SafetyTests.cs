@@ -98,7 +98,8 @@ public class InMemoryOrderJournal : IOrderJournal
     }
     public Task<OrderJournalEntry?> GetAsync(string commandId, CancellationToken ct) => Task.FromResult(_entries.FirstOrDefault(e => e.CommandId == commandId));
     public Task<OrderJournalEntry?> FindByIntentAsync(string intentId, CancellationToken ct) => Task.FromResult(_entries.FirstOrDefault(e => e.IntentId == intentId));
-    public Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct) => Task.FromResult<IReadOnlyList<OrderJournalEntry>>(_entries.Where(e => e.Environment == env && e.AccountId == accountId && (e.State == OrderState.Unknown || e.State == OrderState.Submitting)).ToList());
+    public Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct) => Task.FromResult<IReadOnlyList<OrderJournalEntry>>(_entries.Where(e => e.Environment == env && e.AccountId == accountId && (e.State == OrderState.Unknown || e.State == OrderState.Submitting || e.State == OrderState.BrokerPending)).ToList());
+    public Task<IReadOnlyList<OrderJournalEntry>> ListAsync(TradingEnvironment env, string accountId, CancellationToken ct) => Task.FromResult<IReadOnlyList<OrderJournalEntry>>(_entries.Where(e => e.Environment == env && e.AccountId == accountId).ToList());
 }
 
 public class InMemoryAuditLogger : IAuditLogger
