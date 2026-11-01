@@ -8,7 +8,7 @@ Each check is its own step, and the job summary lists every step's outcome. Any 
 
 | Area | Steps |
 |---|---|
-| Build | `npm_install`, `lint`, `frontend_build`, `publish` |
+| Build | `npm_install`, `lint`, `frontend_build`, `publish`, `package` |
 | Dependency audit | `npm_audit`, `nuget_audit` |
 | Tests | `credential_tests`, `full_tests`, `helpers_pwsh`, `helpers_powershell`, `release_checks` |
 | Smoke | `smoke`: a disposable database and the simulator, with no broker key, live account or real order |
@@ -20,17 +20,17 @@ A green secret scan does not prove a secret is absent. It finds known shapes onl
 
 | Artifact | When | Contents | Kept for |
 |---|---|---|---|
-| `win-x64-<sha>` | Every step passed | Published build and manifest | 30 days |
+| `win-x64-<sha>` | Every step passed | Portable ZIP, its `.sha256` file and manifest | 30 days |
 | `diagnostics-<sha>` | A step failed and the secret scan passed | `.trx` test results and manifest | 14 days |
 
 If the scan fails, nothing is uploaded, so its findings have to be read in the step log. That log shows file paths and never the matched text. App logs from the smoke test are deleted when it ends and are not uploaded.
 
 ## The manifest
 
-`release/win-x64.manifest.json` records the commit, ref, run ID, OS, runtime, .NET SDK and Node versions, each step's outcome, a SHA-256 for each file, and a build hash over the sorted file list. Check a file against it with:
+`release/win-x64.manifest.json` records the commit, ref, run ID, OS, runtime, .NET SDK and Node versions, each step's outcome, a SHA-256 for each file, a build hash over the sorted file list, and the ZIP's SHA-256. Check a file against it with:
 
 ```powershell
-Get-FileHash release/win-x64/PilotTrade.Api.exe -Algorithm SHA256
+Get-FileHash PilotTrade-win-x64.zip -Algorithm SHA256
 ```
 
 The manifest step fails if the working tree changed during the build, or if `PilotTrade.Api.dll` does not name the commit in its product version.

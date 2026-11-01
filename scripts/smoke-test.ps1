@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory)][string]$Executable,
     [int]$Port = 5100,
-    [switch]$AnonymousOnly
+    [switch]$AnonymousOnly,
+    # Starts the build as a user would, with no settings, from another folder. It uses the real per-user data folder, so it refuses to run if a database is already there.
+    [switch]$TestDefaultLocation
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'smoke-helpers.ps1')
@@ -126,4 +128,49 @@ try {
 finally {
     if (-not $app.HasExited) { $app.Kill(); $app.WaitForExit(10000) | Out-Null }
     foreach ($suffix in '', '-wal', '-shm', '.out', '.err', '.live.out', '.live.err') { Remove-Item "$db$suffix" -ErrorAction SilentlyContinue }
+}
+
+if ($TestDefaultLocation) {
+    $userDb = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PilotTrade\pilottrade.db'
+    if (Test-Path $userDb) { throw 'FAIL: A database is already in the per-user folder, and this check will not touch it' }
+    Remove-Item Env:\ConnectionStrings__Default
+    foreach ($name in 'BROKER_MODE', 'TRADING_ENVIRONMENT', 'TRADING_ACCOUNT_ID') { Remove-Item "Env:\$name" }
+    $defaultBase = 'http://127.0.0.1:5099'
+    $outside = [IO.Path]::GetTempPath()
+
+    function StartDefault {
+        $started = Start-Process -FilePath $Executable -WorkingDirectory $outside -PassThru -RedirectStandardOutput "$db.default.out" -RedirectStandardError "$db.default.err"
+        foreach ($i in 1..30) {
+            try { if ((Invoke-WebRequest -Uri "$defaultBase/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { return $started } } catch { Start-Sleep -Seconds 1 }
+        }
+        $started.Kill()
+        throw 'FAIL: The build did not answer on its default address'
+    }
+
+    $first = StartDefault
+    try {
+        Check 'First launch answers from another folder' $true
+        Check 'First launch serves the UI' ((Invoke-WebRequest -Uri "$defaultBase/" -UseBasicParsing -TimeoutSec 15).Content -match 'id="root"')
+        Check 'The database is in the per-user folder' (Test-Path $userDb)
+        Check 'Nothing is written beside the executable' (-not (Test-Path (Join-Path $workDir 'pilottrade.db')))
+        $listening = @(Get-NetTCPConnection -OwningProcess $first.Id -State Listen)
+        Check 'The app listens on loopback only' ($listening.Count -gt 0 -and @($listening | Where-Object { $_.LocalAddress -ne '127.0.0.1' }).Count -eq 0)
+    }
+    finally { if (-not $first.HasExited) { $first.Kill(); $first.WaitForExit(10000) | Out-Null } }
+
+    $outside = Join-Path ([IO.Path]::GetTempPath()) "pilottrade-older-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory $outside | Out-Null
+    New-Item -ItemType File (Join-Path $outside 'pilottrade.db') | Out-Null
+    $second = StartDefault
+    try {
+        Check 'The app restarts on the same database' (Test-Path $userDb)
+        $second.Kill(); $second.WaitForExit(10000) | Out-Null
+        Check 'An older database in the working directory draws a warning' ((Get-Content "$db.default.out" -Raw) -match 'older pilottrade\.db')
+        Check 'The older database is left untouched' ((Get-Item (Join-Path $outside 'pilottrade.db')).Length -eq 0)
+    }
+    finally {
+        if (-not $second.HasExited) { $second.Kill(); $second.WaitForExit(10000) | Out-Null }
+        foreach ($suffix in '.default.out', '.default.err') { Remove-Item "$db$suffix" -ErrorAction SilentlyContinue }
+        Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

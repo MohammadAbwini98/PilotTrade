@@ -1,4 +1,7 @@
 # Vite adds lines with LF to the index.html it copies, so a CRLF checkout builds a file that differs from the committed one.
 src/PilotTrade.Web/index.html text eol=lf
 src/PilotTrade.Api/wwwroot/** text eol=lf
-src/PilotTrade.Api/wwwroot/**/*.svg text eol=lf
+
+# Package files keep one form, so that the ZIP does not depend on how the repository was checked out.
+packaging/windows/** text eol=crlf
+scripts/verify-package.ps1 text eol=crlf

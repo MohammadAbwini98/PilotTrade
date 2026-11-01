@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][string]$PublishPath,
     [Parameter(Mandatory)][string]$Runtime,
     [Parameter(Mandatory)][string]$OutFile,
+    [string]$PackagePath,
     [switch]$RequireClean
 )
 $ErrorActionPreference = 'Stop'
@@ -61,6 +62,7 @@ $manifest = [ordered]@{
     productVersion    = $productVersion
     traceableToCommit = $traceable
     buildHash         = $buildHash
+    packageSha256     = $(if ($PackagePath -and (Test-Path $PackagePath)) { (Get-FileHash $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
     steps             = $outcomes
     failedSteps       = $failed
     allStepsPassed    = ($outcomes.Count -gt 0 -and $failed.Count -eq 0)

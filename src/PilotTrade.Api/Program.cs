@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
+using PilotTrade.Api;
 using PilotTrade.Application.Controls;
 using PilotTrade.Application.Services;
 using PilotTrade.Domain;
@@ -21,10 +22,15 @@ if (args.Contains("--show-owner-token"))
     return;
 }
 
-var builder = WebApplication.CreateBuilder(args);
+var packaged = PortableLayout.IsPackaged(AppContext.BaseDirectory);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = packaged ? AppContext.BaseDirectory : null });
+
+// Without an explicit address Kestrel would pick its own port. A packaged build stays on one known loopback address.
+if (packaged && string.IsNullOrWhiteSpace(builder.Configuration["urls"])) builder.WebHost.UseUrls(PortableLayout.DefaultUrl);
 
 builder.Services.AddDbContext<PilotTradeDbContext>((sp, o) =>
-    o.UseSqlite(sp.GetRequiredService<IConfiguration>().GetConnectionString("Default") ?? "Data Source=pilottrade.db"), ServiceLifetime.Singleton);
+    o.UseSqlite(sp.GetRequiredService<IConfiguration>().GetConnectionString("Default")
+        ?? (packaged ? PortableLayout.UserDatabaseConnection() : "Data Source=pilottrade.db")), ServiceLifetime.Singleton);
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<IClock, SystemClock>();
@@ -67,6 +73,11 @@ builder.Services.AddHostedService<StartupReconciliationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+
+// The journal and kill-switch state in an older database do not carry over by themselves, so this is said out loud.
+if (packaged && app.Configuration.GetConnectionString("Default") is null
+    && new[] { AppContext.BaseDirectory, Environment.CurrentDirectory }.Any(folder => File.Exists(Path.Combine(folder, "pilottrade.db"))))
+    app.Logger.LogWarning("Found an older pilottrade.db that this build does not use. Its journal, audit log and kill-switch state do not apply here. README.txt says how to move it.");
 
 // Invalid broker configuration (including any request for Live) stops startup here.
 var runtime = app.Services.GetRequiredService<BrokerRuntimeOptions>();

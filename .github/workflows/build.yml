@@ -43,6 +43,13 @@ jobs:
         run: dotnet test PilotTrade.slnx --logger trx --results-directory test-results
       - id: publish
         run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r win-x64 --self-contained true -o release/win-x64 -p:SourceRevisionId=${{ github.sha }}
+      - name: Build and check the portable ZIP
+        id: package
+        shell: pwsh
+        run: |
+          ./scripts/package-windows.ps1 -PublishPath release/win-x64 -OutDir release/package
+          Expand-Archive release/package/PilotTrade-win-x64.zip release/unpacked
+          ./scripts/verify-package.ps1 -Folder release/unpacked/PilotTrade-win-x64
       - name: Smoke helper checks, PowerShell 7
         id: helpers_pwsh
         shell: pwsh
@@ -59,14 +66,14 @@ jobs:
       - name: Smoke test
         id: smoke
         shell: pwsh
-        run: ./scripts/smoke-test.ps1 -Executable release/win-x64/PilotTrade.Api.exe
+        run: ./scripts/smoke-test.ps1 -Executable release/unpacked/PilotTrade-win-x64/PilotTrade.Api.exe -TestDefaultLocation
       # Runs whatever failed before it, and covers what exists: tracked files, publish output and test results. Its own failure fails the job.
       - name: Secret scan
         id: secret_scan
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          $extra = @('release/win-x64', 'test-results') | Where-Object { Test-Path $_ }
+          $extra = @('release/win-x64', 'release/unpacked', 'test-results') | Where-Object { Test-Path $_ }
           ./scripts/secret-scan.ps1 -ExtraPaths $extra
       - name: Release manifest
         id: manifest
@@ -74,7 +81,7 @@ jobs:
         shell: pwsh
         env:
           STEP_RESULTS: ${{ toJSON(steps) }}
-        run: ./scripts/release-manifest.ps1 -PublishPath release/win-x64 -Runtime win-x64 -OutFile release/win-x64.manifest.json -RequireClean
+        run: ./scripts/release-manifest.ps1 -PublishPath release/unpacked/PilotTrade-win-x64 -PackagePath release/package/PilotTrade-win-x64.zip -Runtime win-x64 -OutFile release/win-x64.manifest.json -RequireClean
       # The build is uploaded only when every step above passed.
       - uses: actions/upload-artifact@v4
         with:
@@ -82,7 +89,8 @@ jobs:
           retention-days: 30
           if-no-files-found: error
           path: |
-            release/win-x64
+            release/package/PilotTrade-win-x64.zip
+            release/package/PilotTrade-win-x64.zip.sha256
             release/win-x64.manifest.json
       # On failure, test results and the manifest only, and only if the scan of those results came back clean.
       - uses: actions/upload-artifact@v4

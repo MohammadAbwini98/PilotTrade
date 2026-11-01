@@ -62,6 +62,36 @@ try {
     $env:STEP_RESULTS = '{"publish":{"outcome":"success"}}'
     $refused = Run 'release-manifest.ps1' @('-PublishPath', $untraceable, '-Runtime', 'win-x64', '-OutFile', (Join-Path $temp 'u.json'))
     Check 'A build that does not name its commit fails' ($refused.Code -ne 0)
+
+    $env:STEP_RESULTS = ''
+    $publish = NewFolder 'publish' @{ 'PilotTrade.Api.exe' = 'app'; 'PilotTrade.Api.pdb' = 'symbols'; 'appsettings.Development.json' = '{}'; 'appsettings.json' = '{}'; 'createdump.exe' = 'tool'; 'web.config' = 'iis' }
+    $packaged = Join-Path $temp 'package'
+    Check 'Packaging succeeds' ((Run 'package-windows.ps1' @('-PublishPath', $publish, '-OutDir', $packaged)).Code -eq 0)
+    $zip = Join-Path $packaged 'PilotTrade-win-x64.zip'
+    $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+    Run 'package-windows.ps1' @('-PublishPath', $publish, '-OutDir', $packaged) | Out-Null
+    Check 'The same input gives the same ZIP' ((Get-FileHash $zip -Algorithm SHA256).Hash -eq $zipHash)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $unzipped = Join-Path $temp 'unzipped'
+    [IO.Compression.ZipFile]::ExtractToDirectory($zip, $unzipped)
+    $folder = Join-Path $unzipped 'PilotTrade-win-x64'
+    foreach ($name in 'PilotTrade.Api.exe', 'Start-PilotTrade.cmd', 'Show-Owner-Token.cmd', 'README.txt', 'appsettings.example.json', 'Verify-Package.ps1', 'SHA256SUMS.txt') {
+        Check "The package holds $name" (Test-Path (Join-Path $folder $name))
+    }
+    Check 'Debug symbols do not ship' (-not (Test-Path (Join-Path $folder 'PilotTrade.Api.pdb')))
+    Check 'Development settings do not ship' (-not (Test-Path (Join-Path $folder 'appsettings.Development.json')))
+    Check 'The crash-dump tool does not ship' (-not (Test-Path (Join-Path $folder 'createdump.exe')))
+    Check 'IIS configuration does not ship' (-not (Test-Path (Join-Path $folder 'web.config')))
+    Check 'An untouched package verifies' ((Run 'verify-package.ps1' @('-Folder', $folder)).Code -eq 0)
+    Set-Content (Join-Path $folder 'appsettings.Production.json') '{}'
+    Check 'The settings file a user adds does not fail verification' ((Run 'verify-package.ps1' @('-Folder', $folder)).Code -eq 0)
+    Remove-Item (Join-Path $folder 'appsettings.Production.json')
+    Set-Content (Join-Path $folder 'extra.db') 'x'
+    Check 'An extra file fails verification' ((Run 'verify-package.ps1' @('-Folder', $folder)).Code -ne 0)
+    Remove-Item (Join-Path $folder 'extra.db')
+    Set-Content (Join-Path $folder 'PilotTrade.Api.exe') 'tampered'
+    Check 'A changed file fails verification' ((Run 'verify-package.ps1' @('-Folder', $folder)).Code -ne 0)
 }
 finally {
     $env:STEP_RESULTS = ''
