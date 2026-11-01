@@ -57,7 +57,8 @@ try {
         $owner = @{ 'X-PilotTrade-Owner-Token' = $token }
 
         $runtime = Invoke-RestMethod -Uri "$base/api/runtime" -Headers $owner
-        Check 'Execution is disabled' (-not $runtime.executionEnabled)
+        # The simulator fills orders in memory, so executionEnabled is true here. The Capital.com adapter's false is covered by SecurityEndpointTests.
+        Check 'Runs on the simulator, not a broker' ($runtime.mode -eq 'Simulation')
         Check 'Live is locked' ([bool]$runtime.liveLocked)
 
         $accounts = @(Invoke-RestMethod -Uri "$base/api/accounts" -Headers $owner)

@@ -31,7 +31,7 @@ TRADING_ENVIRONMENT=demo
 TRADING_ACCOUNT_ID=<your Demo account ID>
 ```
 
-Live values stop startup. Order submission stays disabled in every mode.
+Live values stop startup. The Capital.com adapter refuses to submit orders. Simulation only fills orders in memory, so `/api/runtime` reports `executionEnabled` as true there, and no broker is contacted.
 
 ## Read-only evidence run
 

@@ -21,7 +21,7 @@ No order was placed. Demo order submission stays disabled and Live stays locked.
 | Platform | Status |
 |---|---|
 | Windows, local | Verified as above. CI has not run |
-| macOS | **Not verified.** CI needs a push, and the keychain check needs a Mac |
+| macOS | **Partly verified.** CI on `dc377bd`: unit 100 of 100, integration 223 passed, 4 skipped, publish passed, smoke test failed on a wrong check. The keychain check still needs a real Mac |
 
 ## Instrument results on the real Demo API
 
@@ -53,7 +53,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 | 5 | Identity, balance, equity, funds, positions and working orders match the web platform | **BLOCKED** | User-dependent | Probe side only. [Checklist](../DEMO_GATE5_OWNER_CHECKLIST.md) | Owner fills the checklist. With no holdings, non-empty mapping stays mock only |
 | 6 | No order endpoint called | **PASS** | Verified | All four files | Measured by the adapter's write counter, with no wire capture |
 | 7 | Evidence holds no credential, token, session header or personal data | **Automated checks pass, owner review pending** | Verified, then user-dependent | Scan results below, sanitized report | Owner reads the sanitized report before sharing it |
-| 8 | CI on Windows and macOS, including the owner flow | **PENDING** | Needs a push | None | Push needs owner approval. The lockfile passes `npm ci --dry-run` |
+| 8 | CI on Windows and macOS, including the owner flow | **FAIL** | Run 41331400074 on `dc377bd`: tests and publish passed on both systems | None | The smoke test expected `executionEnabled` false in simulation, where the simulator reports true, so it stopped at its first owner step. The later owner steps and the published-output secret scan did not run. The check is corrected and needs another push |
 | 9 | Credentials from the macOS keychain on a real Mac | **PENDING** | Needs a Mac | None | Steps below |
 | 10 | NuGet and npm audits clean | **FAIL** strictly | Verified | Below | Owner decides whether to accept the residual, or waits for an upstream fix |
 
