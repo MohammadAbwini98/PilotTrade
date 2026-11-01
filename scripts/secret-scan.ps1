@@ -3,8 +3,9 @@
 param([string[]]$ExtraPaths = @())
 $ErrorActionPreference = 'Stop'
 
-$files = @(git ls-files | Where-Object { Test-Path $_ -PathType Leaf } | ForEach-Object { Get-Item $_ })
-foreach ($path in $ExtraPaths) { $files += Get-ChildItem $path -Recurse -File }
+# -Force because hidden files must be scanned too: dotfiles are hidden on macOS and Linux, and Get-Item refuses them without it.
+$files = @(git ls-files | Where-Object { Test-Path $_ -PathType Leaf } | ForEach-Object { Get-Item $_ -Force })
+foreach ($path in $ExtraPaths) { $files += Get-ChildItem $path -Recurse -File -Force }
 
 $forbiddenName = '(^|[\\/])\.env$|\.db(-wal|-shm)?$|\.pfx$|\.pem$|\.key$|\.log$'
 $textFile = '\.(cs|ts|tsx|js|css|html|json|md|yml|yaml|xml|csproj|config|txt|ps1|sh|env|example)$'
