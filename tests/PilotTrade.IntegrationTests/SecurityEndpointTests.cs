@@ -176,6 +176,25 @@ public sealed class DemoApiFlowTests : IDisposable
         return await client.SendAsync(request);
     }
 
+    public static TheoryData<object> MalformedSelections => new()
+    {
+        new { accountId = "ACC-A", epic = new[] { "EURUSD", "GOLD" } },
+        new { accountId = "ACC-A", epic = new[] { "EURUSD" } },
+        new { accountId = new[] { "ACC-A" }, epic = "EURUSD" },
+        new { accountId = "ACC-A", epic = 5 },
+        new[] { new { accountId = "ACC-A", epic = "EURUSD" } },
+    };
+
+    // The smoke test's 400 on run 41334983006 came from a list in the epic field. The route must keep refusing such a body.
+    [Theory]
+    [MemberData(nameof(MalformedSelections))]
+    public async Task Select_RefusesAnythingButScalarStrings(object body)
+    {
+        var client = await _host.OwnerClientAsync();
+        (await PostAsync(client, "/api/instruments/select", body)).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await client.GetAsync("/api/instruments/selection?accountId=ACC-A")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     private async Task<int> SelectAsync(HttpClient client, string epic)
     {
         var response = await PostAsync(client, "/api/instruments/select", new { accountId = "ACC-A", epic });

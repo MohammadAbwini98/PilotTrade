@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using PilotTrade.Application.Controls;
 using PilotTrade.Application.Services;
@@ -91,6 +92,12 @@ catch (PlatformNotSupportedException) { app.Logger.LogWarning("No OS-protected c
 
 app.UseExceptionHandler(a => a.Run(ctx =>
 {
+    // The Development environment throws on a malformed body where other environments answer 400 directly.
+    if (ctx.Features.Get<IExceptionHandlerFeature>()?.Error is BadHttpRequestException)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return ctx.Response.WriteAsJsonAsync(new { error = "invalid_request" });
+    }
     ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
     return ctx.Response.WriteAsJsonAsync(new { error = "internal_error" });
 }));

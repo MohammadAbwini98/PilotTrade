@@ -6,7 +6,8 @@ param(
     [switch]$AnonymousOnly
 )
 $ErrorActionPreference = 'Stop'
-$base = "http://127.0.0.1:$Port"
+. (Join-Path $PSScriptRoot 'smoke-helpers.ps1')
+$base ="http://127.0.0.1:$Port"
 $db = Join-Path ([IO.Path]::GetTempPath()) "pilottrade-smoke-$([guid]::NewGuid().ToString('N')).db"
 $Executable = (Resolve-Path $Executable).Path
 $workDir = Split-Path $Executable
@@ -56,27 +57,66 @@ try {
         $token = (& $Executable --show-owner-token | Select-Object -Last 1).Trim()
         $owner = @{ 'X-PilotTrade-Owner-Token' = $token }
 
-        $runtime = Invoke-RestMethod -Uri "$base/api/runtime" -Headers $owner
+        # Web errors are reported through Format-HttpFailure, so that a failure cannot print a header or a token.
+        function Send($method, $path, $headers, $json) {
+            $request = @{ Method = $method; Uri = "$base$path"; Headers = $headers; UseBasicParsing = $true; TimeoutSec = 15 }
+            if ($json) { $request.ContentType = 'application/json'; $request.Body = $json }
+            try {
+                $response = Invoke-WebRequest @request
+                return [pscustomobject]@{ Status = [int]$response.StatusCode; Body = [string]$response.Content }
+            }
+            catch {
+                if (-not $_.Exception.Response) { throw "FAIL: $method $($path -replace '\?.*$', '') got no response" }
+                $text = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { '' }
+                return [pscustomobject]@{ Status = [int]$_.Exception.Response.StatusCode; Body = [string]$text }
+            }
+        }
+        function Read($path) {
+            $answer = Send 'Get' $path $owner $null
+            if ($answer.Status -ne 200) { throw "FAIL: $(Format-HttpFailure 'GET' $path $answer.Status $answer.Body)" }
+            return $answer.Body | ConvertFrom-Json
+        }
+        function Guarded($path, $json) {
+            $headers = $owner + @{ 'X-PilotTrade-CSRF' = (Read '/api/security/csrf-token').csrfToken; 'Origin' = $base }
+            return Send 'Post' $path $headers $json
+        }
+        function GuardedOk($path, $json) {
+            $answer = Guarded $path $json
+            if ($answer.Status -ne 200) { throw "FAIL: $(Format-HttpFailure 'POST' $path $answer.Status $answer.Body)" }
+            return $answer.Body | ConvertFrom-Json
+        }
+
+        $runtime = Read '/api/runtime'
         # The simulator fills orders in memory, so executionEnabled is true here. The Capital.com adapter's false is covered by SecurityEndpointTests.
         Check 'Runs on the simulator, not a broker' ($runtime.mode -eq 'Simulation')
         Check 'Live is locked' ([bool]$runtime.liveLocked)
 
-        # Invoke-RestMethod can emit a JSON array as one object; the pipeline unrolls it, so [0] is the first item either way.
-        $accounts = @(Invoke-RestMethod -Uri "$base/api/accounts" -Headers $owner | ForEach-Object { $_ })
+        $accounts = @(ConvertTo-FlatList -InputObject (Read '/api/accounts'))
+        Check 'Accounts are listed' ($accounts.Count -gt 0)
         $accountId = $accounts[0].accountId
-        Check 'Accounts are listed' ([bool]$accountId)
-        $found = @(Invoke-RestMethod -Uri "$base/api/instruments/search?q=&limit=5" -Headers $owner | ForEach-Object { $_ })
+        $found = @(ConvertTo-FlatList -InputObject (Read '/api/instruments/search?q=&limit=5'))
         Check 'Instruments are listed' ($found.Count -gt 0)
+        $epic = $found[0].epic
+        $selectBody = New-SelectionBody $accountId $epic
 
-        function Guarded($path, $body) {
-            $csrf = (Invoke-RestMethod -Uri "$base/api/security/csrf-token" -Headers $owner).csrfToken
-            $headers = $owner + @{ 'X-PilotTrade-CSRF' = $csrf; 'Origin' = $base }
-            Invoke-RestMethod -Method Post -Uri "$base$path" -Headers $headers -ContentType 'application/json' -Body ($body | ConvertTo-Json)
-        }
-        $selected = Guarded '/api/instruments/select' @{ accountId = $accountId; epic = $found[0].epic }
+        $noCsrf = Send 'Post' '/api/instruments/select' ($owner + @{ 'Origin' = $base }) $selectBody
+        Check 'Select without a CSRF token is refused' ($noCsrf.Status -eq 403)
+        $listBody = (@{ accountId = $accountId; epic = @($epic, $epic) } | ConvertTo-Json -Compress)
+        Check 'Select with a list as the epic is a 400' ((Guarded '/api/instruments/select' $listBody).Status -eq 400)
+
+        $selected = GuardedOk '/api/instruments/select' $selectBody
         Check 'Instrument can be selected' ($selected.selection.selectionVersion -ge 1)
-        $outdated = Guarded '/api/market/snapshot' @{ accountId = $accountId; epic = $found[0].epic; selectionVersion = $selected.selection.selectionVersion + 1 }
+        $snapshotBody = (@{ accountId = $accountId; epic = $epic; selectionVersion = $selected.selection.selectionVersion + 1 } | ConvertTo-Json -Compress)
+        $outdated = GuardedOk '/api/market/snapshot' $snapshotBody
         Check 'Outdated selection is NO_TRADE' ($outdated.outcome -eq 'NO_TRADE')
+
+        # A point-in-time check only. That the simulator sends nothing to a broker rests on the mode check above.
+        $remote = @(Get-NetTCPConnection -OwningProcess $app.Id -State Established -ErrorAction SilentlyContinue | Where-Object { $_.RemoteAddress -notin '127.0.0.1', '::1' })
+        Check 'No connection outside this machine is open' ($remote.Count -eq 0)
+
+        $app.Kill(); $app.WaitForExit(10000) | Out-Null
+        $logs = (Get-Content "$db.out", "$db.err" -Raw -ErrorAction SilentlyContinue) -join ''
+        Check 'Owner token is not in the app logs' (-not $logs.Contains($token))
     }
 }
 finally {

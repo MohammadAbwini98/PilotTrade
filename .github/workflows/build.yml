@@ -32,6 +32,12 @@ jobs:
       - name: Full test suite
         run: dotnet test PilotTrade.slnx
       - run: dotnet publish src/PilotTrade.Api/PilotTrade.Api.csproj -c Release -r win-x64 --self-contained true -o release/win-x64
+      - name: Smoke helper checks, PowerShell 7
+        shell: pwsh
+        run: ./scripts/smoke-helpers.tests.ps1
+      - name: Smoke helper checks, Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/smoke-helpers.tests.ps1
       - name: Smoke test
         shell: pwsh
         run: ./scripts/smoke-test.ps1 -Executable release/win-x64/PilotTrade.Api.exe
