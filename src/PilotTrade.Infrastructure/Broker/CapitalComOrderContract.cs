@@ -84,6 +84,13 @@ public static class CapitalComOrderContract
         }
         var dealId = CapitalComJson.OptStr(root, "dealId") ?? affected.FirstOrDefault()?.DealId;
         var reason = state == OrderState.Rejected ? "Broker rejected the deal" : state == OrderState.Unknown ? "Broker deal status not recognized" : null;
+
+        // Contradictory answers stay uncertain: an acceptance must name a deal, and a rejection must not have touched one.
+        if (state == OrderState.Confirmed && string.IsNullOrWhiteSpace(dealId))
+            (state, reason) = (OrderState.Unknown, "Broker accepted the deal without a deal ID");
+        else if (state == OrderState.Rejected && affected.Count > 0)
+            (state, reason) = (OrderState.Unknown, "Broker rejected the deal but reported affected deals");
+
         return new BrokerSubmissionResult("", dealReference, dealId, state, reason, now, state == OrderState.Confirmed ? now : null, affected);
     }
 }

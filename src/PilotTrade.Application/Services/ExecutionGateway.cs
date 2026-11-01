@@ -70,34 +70,76 @@ public sealed class ExecutionGateway : IExecutionGateway
         await _journal.CreateAsync(entry, ct);
 
         // Submit
+        BrokerSubmissionResult result;
         try
         {
             entry = entry with { State = OrderState.Submitting, UpdatedUtc = _clock.UtcNow, SubmittedUtc = _clock.UtcNow };
             await _journal.UpdateAsync(entry, ct);
             lock (_lock) _submittedIntents.Add(intent.IntentId);
-            var result = await _broker.SubmitOrderAsync(intent, ct);
-            var finalState = result.State;
-            entry = entry with
-            {
-                State = finalState,
-                BrokerDealReference = result.BrokerDealReference,
-                BrokerDealId = result.BrokerDealId,
-                RejectionReason = result.RejectionReason,
-                ConfirmedUtc = result.ConfirmedUtc,
-                UpdatedUtc = _clock.UtcNow
-            };
-            await _journal.UpdateAsync(entry, ct);
-            await _audit.LogAsync(new AuditEvent(_ids.NewId("audit"), now, "Execution", "Submit", "system", _broker.Environment.ToString().ToLowerInvariant(), intent.AccountId, intent.Epic, intent.IntentId, JsonSerializer.Serialize(result), true), ct);
-            return new ExecutionResult(intent.IntentId, finalState, result.BrokerDealReference, result.BrokerDealId, result.RejectionReason, _clock.UtcNow);
+            result = await _broker.SubmitOrderAsync(intent, ct);
         }
         catch (Exception ex)
         {
             // Outcome unknown: journal it for reconciliation and never resubmit.
             var reason = $"Broker outcome uncertain ({ex.GetType().Name})";
             entry = entry with { State = OrderState.Unknown, RejectionReason = reason, UpdatedUtc = _clock.UtcNow };
-            await _journal.UpdateAsync(entry, CancellationToken.None);
+            await TryRecordAsync(entry);
             return new ExecutionResult(intent.IntentId, OrderState.Unknown, null, null, reason, _clock.UtcNow);
         }
+
+        // The broker has answered, so nothing past this point may lose its references or turn into a resubmission.
+        var (finalState, finalReason) = Classify(result);
+        var dealIds = result.AffectedDeals is { Count: > 0 } deals ? string.Join(",", deals.Select(d => d.DealId)) : result.BrokerDealId;
+        entry = entry with
+        {
+            State = finalState,
+            BrokerDealReference = result.BrokerDealReference,
+            BrokerDealId = dealIds,
+            RejectionReason = finalReason,
+            ConfirmedUtc = finalState == OrderState.Confirmed ? result.ConfirmedUtc : null,
+            UpdatedUtc = _clock.UtcNow
+        };
+        if (!await TryRecordAsync(entry))
+        {
+            // The journal still reads Submitting, which reconciliation treats as uncertain.
+            Suspend("Order journal failed after a broker answer");
+            return new ExecutionResult(intent.IntentId, OrderState.Unknown, result.BrokerDealReference, dealIds, "Order journal failed after a broker answer", _clock.UtcNow);
+        }
+        try
+        {
+            await _audit.LogAsync(new AuditEvent(_ids.NewId("audit"), now, "Execution", "Submit", "system", _broker.Environment.ToString().ToLowerInvariant(), intent.AccountId, intent.Epic, intent.IntentId, JsonSerializer.Serialize(result), true), CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // The order's state is already journaled and stays as it is; no further order runs without an audit trail.
+            Suspend("Audit log failed after a broker answer");
+        }
+        return new ExecutionResult(intent.IntentId, finalState, result.BrokerDealReference, dealIds, finalReason, _clock.UtcNow);
+    }
+
+    // Only a referenced acceptance or an explicit rejection is a known outcome.
+    private static (OrderState State, string? Reason) Classify(BrokerSubmissionResult result)
+    {
+        var referenced = !string.IsNullOrWhiteSpace(result.BrokerDealReference);
+        return result.State switch
+        {
+            OrderState.Rejected => (OrderState.Rejected, result.RejectionReason),
+            OrderState.Confirmed or OrderState.BrokerPending when referenced => (result.State, result.RejectionReason),
+            OrderState.Confirmed or OrderState.BrokerPending => (OrderState.Unknown, "Broker outcome uncertain (no deal reference)"),
+            _ => (OrderState.Unknown, result.RejectionReason ?? "Broker outcome uncertain")
+        };
+    }
+
+    private async Task<bool> TryRecordAsync(OrderJournalEntry entry)
+    {
+        try { await _journal.UpdateAsync(entry, CancellationToken.None); return true; }
+        catch (Exception) { return false; }
+    }
+
+    private void Suspend(string reason)
+    {
+        _control.EngageKillSwitch();
+        _control.State.SuspensionReason = reason;
     }
 
     private static ExecutionResult Reject(string intentId, string reason, DateTimeOffset now)

@@ -156,6 +156,108 @@ public class ExecutionIntegrityTests
         (await journal.ListUncertainAsync(TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None)).Should().HaveCount(1);
     }
 
+    private BrokerSubmissionResult Answer(OrderState state, string? reference, string? deal = null, IReadOnlyList<AffectedDeal>? affected = null) =>
+        new("i1", reference, deal, state, state == OrderState.Rejected ? "no" : null, _clock.UtcNow, state == OrderState.Confirmed ? _clock.UtcNow : null, affected);
+
+    private async Task<(ExecutionResult Result, OrderJournalEntry? Entry)> Submit(BrokerSubmissionResult answer)
+    {
+        var journal = new InMemoryOrderJournal();
+        var result = await Gateway(new ScriptedBroker { OnSubmit = _ => answer }, journal).ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+        return (result, await journal.FindByIntentAsync("i1", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(OrderState.Confirmed, "o_1", OrderState.Confirmed)]
+    [InlineData(OrderState.BrokerPending, "o_1", OrderState.BrokerPending)]
+    [InlineData(OrderState.Rejected, null, OrderState.Rejected)]
+    [InlineData(OrderState.Confirmed, null, OrderState.Unknown)]
+    [InlineData(OrderState.BrokerPending, null, OrderState.Unknown)]
+    [InlineData(OrderState.Unknown, "o_1", OrderState.Unknown)]
+    [InlineData(OrderState.Submitting, "o_1", OrderState.Unknown)]
+    public async Task BrokerAnswers_AreClassified_AndJournaled(OrderState answer, string? reference, OrderState expected)
+    {
+        var (result, entry) = await Submit(Answer(answer, reference, "d1"));
+        result.FinalState.Should().Be(expected);
+        entry!.State.Should().Be(expected);
+        entry.BrokerDealReference.Should().Be(reference);
+    }
+
+    [Fact]
+    public async Task MultiDealAnswer_KeepsEveryDeal()
+    {
+        var (result, entry) = await Submit(Answer(OrderState.Confirmed, "o_1", "d1", new[] { new AffectedDeal("d1", "OPENED"), new AffectedDeal("d2", "OPENED") }));
+        result.BrokerDealId.Should().Be("d1,d2");
+        entry!.BrokerDealId.Should().Be("d1,d2");
+    }
+
+    private sealed class FailingAudit : IAuditLogger
+    {
+        public Task LogAsync(AuditEvent evt, CancellationToken ct) => throw new InvalidOperationException("audit down");
+    }
+
+    // Records Submitting, then fails on the outcome.
+    private sealed class FailingOutcomeJournal : IOrderJournal
+    {
+        private readonly InMemoryOrderJournal _inner = new();
+        public Task<OrderJournalEntry> CreateAsync(OrderJournalEntry entry, CancellationToken ct) => _inner.CreateAsync(entry, ct);
+        public Task UpdateAsync(OrderJournalEntry entry, CancellationToken ct) => entry.State == OrderState.Submitting ? _inner.UpdateAsync(entry, ct) : throw new InvalidOperationException("journal down");
+        public Task<OrderJournalEntry?> GetAsync(string commandId, CancellationToken ct) => _inner.GetAsync(commandId, ct);
+        public Task<OrderJournalEntry?> FindByIntentAsync(string intentId, CancellationToken ct) => _inner.FindByIntentAsync(intentId, ct);
+        public Task<IReadOnlyList<OrderJournalEntry>> ListUncertainAsync(TradingEnvironment env, string accountId, CancellationToken ct) => _inner.ListUncertainAsync(env, accountId, ct);
+        public Task<IReadOnlyList<OrderJournalEntry>> ListAsync(TradingEnvironment env, string accountId, CancellationToken ct) => _inner.ListAsync(env, accountId, ct);
+    }
+
+    private TestTradingControl ReadyControl()
+    {
+        var control = new TestTradingControl();
+        control.State.ReconciliationComplete = true;
+        return control;
+    }
+
+    [Fact]
+    public async Task AuditFailure_KeepsTheJournaledOutcome_AndSuspends()
+    {
+        var journal = new InMemoryOrderJournal();
+        var control = ReadyControl();
+        var broker = new ScriptedBroker { OnSubmit = _ => Answer(OrderState.BrokerPending, "o_1") };
+        var result = await new ExecutionGateway(broker, control, new FailingAudit(), journal, _clock, new GuidIdGenerator()).ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+
+        result.FinalState.Should().Be(OrderState.BrokerPending);
+        result.BrokerDealReference.Should().Be("o_1");
+        var entry = await journal.FindByIntentAsync("i1", CancellationToken.None);
+        entry!.State.Should().Be(OrderState.BrokerPending);
+        entry.BrokerDealReference.Should().Be("o_1");
+        control.State.KillSwitchEngaged.Should().BeTrue();
+        broker.Submissions.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task JournalFailureAfterAnswer_IsUnknown_KeepsTheReference_AndNeverResubmits()
+    {
+        var journal = new FailingOutcomeJournal();
+        var control = ReadyControl();
+        var broker = new ScriptedBroker { OnSubmit = _ => Answer(OrderState.BrokerPending, "o_1") };
+        var gateway = new ExecutionGateway(broker, control, new InMemoryAuditLogger(), journal, _clock, new GuidIdGenerator());
+
+        var result = await gateway.ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+        result.FinalState.Should().Be(OrderState.Unknown);
+        result.BrokerDealReference.Should().Be("o_1");
+        control.State.KillSwitchEngaged.Should().BeTrue();
+        (await journal.ListUncertainAsync(TradingEnvironment.Demo, "SIM-ACC", CancellationToken.None)).Should().HaveCount(1);
+
+        await gateway.ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+        broker.Submissions.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task JournalFailureAfterTimeout_StillReturnsUnknown()
+    {
+        var journal = new FailingOutcomeJournal();
+        var broker = new ScriptedBroker { OnSubmit = _ => throw new TaskCanceledException("timeout") };
+        var result = await new ExecutionGateway(broker, ReadyControl(), new InMemoryAuditLogger(), journal, _clock, new GuidIdGenerator()).ExecuteAsync(TestData.Execution(_clock), CancellationToken.None);
+        result.FinalState.Should().Be(OrderState.Unknown);
+    }
+
     private OrderJournalEntry Entry(string id, OrderState state, string? reference) =>
         new("cmd_" + id, id, TradingEnvironment.Demo, "SIM-ACC", "EURUSD", state, id, "snap", null, reference, null, _clock.UtcNow, _clock.UtcNow, null, null, _clock.UtcNow, id);
 

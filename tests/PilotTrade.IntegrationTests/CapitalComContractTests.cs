@@ -719,6 +719,28 @@ public class CapitalComContractTests
     public void Confirmation_OtherStatuses(string dealStatus, OrderState expected) =>
         CapitalComOrderContract.ParseConfirmation($"{{\"dealReference\":\"o_1\",\"dealStatus\":\"{dealStatus}\"}}", "o_1", _clock.UtcNow).State.Should().Be(expected);
 
+    [Theory]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\",\"dealId\":\"d1\"}", OrderState.Confirmed, "d1")]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\",\"affectedDeals\":[{\"dealId\":\"d2\",\"status\":\"OPENED\"}]}", OrderState.Confirmed, "d2")]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\"}", OrderState.Unknown, null)]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\",\"affectedDeals\":[]}", OrderState.Unknown, null)]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"REJECTED\",\"affectedDeals\":[{\"dealId\":\"d3\",\"status\":\"OPENED\"}]}", OrderState.Unknown, "d3")]
+    public void Confirmation_ContradictoryAnswers_StayUncertain(string body, OrderState expected, string? dealId)
+    {
+        var c = CapitalComOrderContract.ParseConfirmation(body, "o_1", _clock.UtcNow);
+        c.State.Should().Be(expected);
+        c.BrokerDealId.Should().Be(dealId);
+        c.ConfirmedUtc.HasValue.Should().Be(expected == OrderState.Confirmed);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"dealStatus\":\"ACCEPTED\"}")]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\",\"affectedDeals\":\"d1\"}")]
+    [InlineData("{\"dealReference\":\"o_1\",\"dealStatus\":\"ACCEPTED\",\"affectedDeals\":[{\"status\":\"OPENED\"}]}")]
+    public void Confirmation_Malformed_Throws(string body) =>
+        Assert.Throws<BrokerException>(() => CapitalComOrderContract.ParseConfirmation(body, "o_1", _clock.UtcNow));
+
     [Fact]
     public void Confirmation_ForAnotherReference_IsMalformed() =>
         Assert.Throws<BrokerException>(() => CapitalComOrderContract.ParseConfirmation("{\"dealReference\":\"o_other\",\"dealStatus\":\"ACCEPTED\"}", "o_1", _clock.UtcNow));
