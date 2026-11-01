@@ -139,7 +139,7 @@ public sealed class SimulatedBrokerAdapter : IBrokerAdapter
         var posId = _ids.NewId("pos");
         var q = QuoteFor(intent.Epic);
         var price = intent.Side == OrderSide.Buy ? q.Ask : q.Bid;
-        _positions[posId] = new Position(posId, intent.AccountId, _env, intent.Epic, intent.Side, intent.Size, price, price, 0m, intent.StopLevel, intent.TakeProfitLevel, now, now);
+        _positions[posId] = new Position(posId, intent.AccountId, _env, intent.Epic, intent.Side, intent.Size, price, price, 0m, intent.StopLevel, intent.TakeProfitLevel, now, now, "USD");
         var res = new BrokerSubmissionResult(intent.IntentId, dealRef, posId, OrderState.Confirmed, null, now, now, new[] { new AffectedDeal(posId, "OPENED") });
         _confirms[dealRef] = res;
         return Task.FromResult(res);

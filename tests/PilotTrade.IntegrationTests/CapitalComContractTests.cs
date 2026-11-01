@@ -858,6 +858,15 @@ public class CapitalComContractTests
     }
 
     [Fact]
+    public async Task Positions_CarryTheBrokerCurrency_AndLeaveItUnknownWhenAbsent()
+    {
+        var adapter = await Adapter();
+        (await adapter.GetPositionsAsync("ACC-A", CancellationToken.None)).Single().Currency.Should().Be("USD");
+        _fake.Positions["ACC-A"] = CapitalFake.PositionsFor("EURUSD").Replace("\"currency\":\"USD\",", "");
+        (await adapter.GetPositionsAsync("ACC-A", CancellationToken.None)).Single().Currency.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Probe_RunsTheApplicationSnapshotPath_ForBothTimeframes()
     {
         var evidence = await new DemoReadOnlyProbe(await Adapter(), _clock).RunAsync("ACC-A", "EURUSD", CancellationToken.None);

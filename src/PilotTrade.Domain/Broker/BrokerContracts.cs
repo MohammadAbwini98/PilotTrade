@@ -109,7 +109,8 @@ public sealed record Position(
     decimal? StopLevel,
     decimal? ProfitLevel,
     DateTimeOffset OpenedUtc,
-    DateTimeOffset AsOfUtc);
+    DateTimeOffset AsOfUtc,
+    string? Currency = null);
 
 public sealed record WorkingOrder(
     string OrderId,

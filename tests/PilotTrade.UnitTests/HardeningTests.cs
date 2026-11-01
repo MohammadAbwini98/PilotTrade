@@ -265,6 +265,48 @@ public class RiskFailClosedTests
         new RiskEngine().Evaluate(crossed).Reasons.Should().Contain("Quote invalid");
     }
 
+    private Position Held(decimal? level, string? currency = "USD", OrderSide side = OrderSide.Buy, string epic = "EURUSD", decimal size = 1m) =>
+        new("p", "SIM-ACC", TradingEnvironment.Demo, epic, side, size, level, level, 0m, null, null, _clock.UtcNow, _clock.UtcNow, currency);
+
+    private IReadOnlyList<string> EvaluateWith(params Position[] positions) =>
+        new RiskEngine().Evaluate(SpreadRequest(InstrumentAssetClass.Fx, 0.001m) with { AllPositions = positions }).Reasons;
+
+    [Fact]
+    public void PositionLevelUnknown_RejectsAndStatesNoExposure()
+    {
+        // A huge known position beside an unknown one: a total counting the unknown as zero would report the limit, not the gap.
+        var reasons = EvaluateWith(Held(null), Held(1_000_000m));
+        reasons.Should().Contain("Position level missing");
+        reasons.Should().NotContain(r => r.Contains("exposure exceeded"));
+    }
+
+    [Fact]
+    public void PositionCurrencyUnknown_Rejects() =>
+        EvaluateWith(Held(1m, currency: null)).Should().Contain("Position currency unavailable");
+
+    [Fact]
+    public void PositionInAnotherCurrency_Rejects() =>
+        EvaluateWith(Held(1m, currency: "EUR")).Should().Contain("Position currency differs from account");
+
+    [Fact]
+    public void KnownPositions_AreSummed_AgainstEachLimit()
+    {
+        var reasons = EvaluateWith(Held(20_000m));
+        reasons.Should().Contain("Gross exposure exceeded").And.Contain("Net exposure exceeded").And.Contain("Per-instrument exposure exceeded");
+    }
+
+    [Fact]
+    public void OppositePositions_OffsetNetExposure_ButNotGross()
+    {
+        var reasons = EvaluateWith(Held(6_000m), Held(6_000m, side: OrderSide.Sell, epic: "GOLD"));
+        reasons.Should().Contain("Gross exposure exceeded");
+        reasons.Should().NotContain("Net exposure exceeded");
+    }
+
+    [Fact]
+    public void KnownPositionsInsideTheLimits_RaiseNoExposureReason() =>
+        EvaluateWith(Held(1m)).Should().NotContain(r => r.Contains("xposure") || r.StartsWith("Position "));
+
     private IReadOnlyList<string> EvaluateSpread(InstrumentAssetClass assetClass, decimal spreadPercent) =>
         new RiskEngine().Evaluate(SpreadRequest(assetClass, spreadPercent)).Reasons;
 

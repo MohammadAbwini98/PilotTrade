@@ -90,14 +90,25 @@ public sealed class RiskEngine : IRiskEngine
         }
 
         // Exposure
-        if (request.AllPositions.Any(p => p.OpenLevel is null)) reasons.Add("Position level missing");
-        var sameEpicExposure = request.AllPositions.Where(p => p.Epic == intent.Epic).Sum(p => p.Size * (p.OpenLevel ?? 0m));
-        var grossExposure = request.AllPositions.Sum(p => p.Size * (p.OpenLevel ?? 0m)) + (intent.Size * (intent.Side == OrderSide.Buy ? quote.Ask : quote.Bid));
-        if (grossExposure > policy.MaxGrossExposureAccountCurrency) reasons.Add("Gross exposure exceeded");
-        var netExposure = request.AllPositions.Sum(p => p.Direction == OrderSide.Buy ? p.Size * (p.OpenLevel ?? 0m) : -p.Size * (p.OpenLevel ?? 0m));
-        netExposure += intent.Side == OrderSide.Buy ? intent.Size * quote.Ask : -intent.Size * quote.Bid;
-        if (Math.Abs(netExposure) > policy.MaxNetExposureAccountCurrency) reasons.Add("Net exposure exceeded");
-        if (sameEpicExposure + intent.Size * quote.Ask > policy.MaxPerInstrumentExposureAccountCurrency) reasons.Add("Per-instrument exposure exceeded");
+        // An exposure total can only be stated when every position's level and currency are known and comparable, so an
+        // unknown is a rejection and never a smaller sum.
+        var levelMissing = request.AllPositions.Any(p => p.OpenLevel is null);
+        var currencyMissing = request.AllPositions.Any(p => string.IsNullOrWhiteSpace(p.Currency));
+        var currencyDiffers = request.AllPositions.Any(p => !string.IsNullOrWhiteSpace(p.Currency) && !string.Equals(p.Currency, acct.Currency, StringComparison.OrdinalIgnoreCase));
+        if (levelMissing) reasons.Add("Position level missing");
+        if (currencyMissing) reasons.Add("Position currency unavailable");
+        if (currencyDiffers) reasons.Add("Position currency differs from account");
+        if (!levelMissing && !currencyMissing && !currencyDiffers)
+        {
+            var orderExposure = intent.Size * (intent.Side == OrderSide.Buy ? quote.Ask : quote.Bid);
+            var grossExposure = request.AllPositions.Sum(p => p.Size * p.OpenLevel!.Value) + orderExposure;
+            if (grossExposure > policy.MaxGrossExposureAccountCurrency) reasons.Add("Gross exposure exceeded");
+            var netExposure = request.AllPositions.Sum(p => (p.Direction == OrderSide.Buy ? 1m : -1m) * p.Size * p.OpenLevel!.Value);
+            netExposure += intent.Side == OrderSide.Buy ? orderExposure : -orderExposure;
+            if (Math.Abs(netExposure) > policy.MaxNetExposureAccountCurrency) reasons.Add("Net exposure exceeded");
+            var sameEpicExposure = request.AllPositions.Where(p => p.Epic == intent.Epic).Sum(p => p.Size * p.OpenLevel!.Value);
+            if (sameEpicExposure + orderExposure > policy.MaxPerInstrumentExposureAccountCurrency) reasons.Add("Per-instrument exposure exceeded");
+        }
 
         // Concurrency
         if (request.AllPositions.Count >= policy.MaxConcurrentPositions && !request.AllPositions.Any(p => p.Epic == intent.Epic)) reasons.Add("Max concurrent positions");

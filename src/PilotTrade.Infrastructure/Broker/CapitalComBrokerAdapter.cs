@@ -450,7 +450,7 @@ public sealed class CapitalComBrokerAdapter : IBrokerAdapter
             return new Position(CapitalComJson.Str(p, "dealId"), accountId, _config.Environment, CapitalComJson.Str(m, "epic"), side,
                 CapitalComJson.Positive(p, "size"), CapitalComJson.Positive(p, "level"), side == OrderSide.Buy ? bid : offer,
                 CapitalComJson.Dec(p, "upl"), CapitalComJson.OptDec(p, "stopLevel"), CapitalComJson.OptDec(p, "profitLevel"),
-                CapitalComJson.Utc(p, "createdDateUTC"), now);
+                CapitalComJson.Utc(p, "createdDateUTC"), now, CapitalComJson.OptStr(p, "currency"));
         }).ToList();
     }, ct);
 
