@@ -14,6 +14,7 @@
 - First CI run, on `dc377bd`: tests passed on Windows and macOS, and the smoke test failed on a wrong check. It expected `executionEnabled` to be false in simulation, and now checks that the run is on the simulator.
 - Second CI run, on `347ad92`: tests passed on both systems, and the smoke test failed with a 400 on instrument selection. PowerShell passed the JSON list as one object, so the script sent every epic in one request. It now unrolls the list.
 - Third CI run, on `4723418`: Windows green, and the macOS smoke test passed with the owner flow. The secret scan failed on macOS because `Get-Item` refuses hidden files without `-Force`. It now uses `-Force`, which also includes hidden files in publish output on both systems.
+- Fourth CI run, on `2db8417`: green on Windows and macOS, including the owner flow and the published-output secret scan. Gate 8 passes on that commit, and the release commit needs its own green run.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)
