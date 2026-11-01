@@ -39,6 +39,22 @@ Runs: 2026-11-01, 22:44 UTC, on `90d141b` with a clean working tree. The only ch
 
 **Gate 4 has not passed.** GOLD reported Closed 44 minutes after 22:00 UTC. No 1h bar could have closed since the reopening at this time, so this run does not test whether EURUSD's refusal clears.
 
+### Retry 2 on 993363a
+
+Runs: 2026-11-01, 23:16 UTC, on `993363a` with a clean working tree. The only changes since `2c1e9ed` are documents. Report: [DEMO_EVIDENCE_SANITIZED_993363a.md](DEMO_EVIDENCE_SANITIZED_993363a.md). The report script's checks passed, and all three raw files record `OrderEndpointsCalled=false`.
+
+| Instrument | Broker status | Quote age | Spread, limit | Candle close age, missing bars | Steps | Result |
+|---|---|---|---|---|---|---|
+| BTCUSD | Open | 0 s | 0.0641%, 1% | 108 s, 1 | 10 of 10 | **PASS** |
+| EURUSD | Open | 6 s | 0.0063%, 0.05% | 114 s, 589 | 10 of 10 | **PASS** |
+| GOLD | Open | 0 s | 0.0128%, 0.2% | 119 s, 600 | 9 of 10 | **FAIL.** Snapshot refused with `1h candles stale` |
+
+**Gate 4 has not passed.** It needs all three to pass on one commit.
+
+- **EURUSD's refusal cleared** once a 1h bar could have closed after the reopening. This is the first time EURUSD has passed on an open market.
+- **GOLD reopened later than FX.** It reported Closed at 22:44 UTC and Open at 23:16 UTC. Its 600 missing bars match 50 hours at 5 minutes each, which points to a 23:00 UTC reopening. That time is an inference.
+- **GOLD's refusal looks like the one EURUSD had,** and no 1h bar could have closed since a 23:00 UTC reopening. Whether it clears is not yet shown. The first run that can test it is after 00:00 UTC, so the last retry is set for about 00:08 UTC, not 23:46 UTC.
+
 ## Test and build results
 
 | Check | Result | Kind |
@@ -82,7 +98,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 | 1 | Active account equals the requested account, and a mismatch is refused | **PASS** | Verified | `btcusd-`, `eurusd-`, `gold-`, `wrongaccount-09244cf` | Real account ID through `TRADING_ACCOUNT_ID` not run. Only the owner sets it. Switching accounts is mock only, as the login has one account |
 | 2 | Financial fields parse, and unsent values stay null | **PASS**, parsing only | Verified | Same three instrument files | Values are compared under gate 5 |
 | 3 | Metadata parses for 2 or more asset classes | **PASS**, 3 classes | Verified | Same three instrument files | Dealing rules not confirmed against the platform |
-| 4 | Quote, candles, spread and freshness in market hours | **NOT PASSED** | Verified for crypto. FX and gold unproven | On `90d141b`: BTCUSD passed, EURUSD open with a stale 1h snapshot, GOLD closed | Rerun all three on one commit once GOLD reports Open and a 1h bar has closed after the reopening |
+| 4 | Quote, candles, spread and freshness in market hours | **NOT PASSED** | Verified for crypto. FX and gold unproven | On `993363a`: BTCUSD and EURUSD passed, GOLD open with a stale 1h snapshot | Rerun all three on one commit once a 1h bar has closed after GOLD's reopening |
 | 5 | Identity, balance, equity, funds, positions and working orders match the web platform | **BLOCKED** | User-dependent | Probe side only. [Checklist](../DEMO_GATE5_OWNER_CHECKLIST.md) | Owner fills the checklist. With no holdings, non-empty mapping stays mock only |
 | 6 | No order endpoint called | **PASS** | Verified | All four files | Measured by the adapter's write counter, with no wire capture |
 | 7 | Evidence holds no credential, token, session header or personal data | **Automated checks pass, owner review pending** | Verified, then user-dependent | Scan results below, sanitized report | Owner reads the sanitized report before sharing it |
