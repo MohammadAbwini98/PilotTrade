@@ -6,6 +6,27 @@ Tested commit: `09244cf22769e0efba966643a3f962fd643bfa64`, on `feature/capital-d
 
 No order was placed. Demo order submission stays disabled and Live stays locked. The branch was pushed only for CI, with owner approval for each push.
 
+## Open-market run on 2c1e9ed
+
+Runs: 2026-11-01, 22:13 UTC, on `2c1e9ed` with a clean working tree. This is newer than the rest of this report and replaces its gate 4 reading. The shareable version is [DEMO_EVIDENCE_SANITIZED_2c1e9ed.md](DEMO_EVIDENCE_SANITIZED_2c1e9ed.md). `demo-evidence-report.ps1` passed its commit, host and scan checks, and all three raw files record `OrderEndpointsCalled=false`.
+
+| Instrument | Broker status | Quote age | Spread, limit | Candle close age, missing bars | Steps | Result |
+|---|---|---|---|---|---|---|
+| BTCUSD | Open | 0 s | 0.0643%, 1% | 182 s, 1 | 10 of 10 | **PASS** |
+| EURUSD | Open | 0 s | 0.0269%, 0.05% | 187 s, 589 | 9 of 10 | **FAIL.** Snapshot refused with `1h candles stale` |
+| GOLD | Closed | 177256 s | 0.0129%, 0.2% | 177193 s, 0 | 7 of 10 | **BLOCKED.** Market closed, freshness not tested |
+
+**Gate 4 has not passed.**
+
+- **EURUSD's refusal is expected to clear, but that is not yet shown.** `MarketDataService` allows a 1h candle to be 3 bars old, and at this time the newest closed 1h candle was from before the weekend. It cannot pass until a 1h bar closes after the reopening. It fails closed, so the system refuses to trade for about the first hour after a weekend open.
+- **The 589 missing EURUSD bars** match the 49 hours of the weekend closure at 5 minutes each. This is an inference from the count, and the probe does not separate closed hours from gaps in open hours.
+- **BTCUSD's 1 missing bar** is a real gap on a market that trades all weekend. The step allows it, and its cause is unknown.
+- **EURUSD's open-market spread** was inside its limit, on one reading shortly after the open.
+- **GOLD reported Closed 13 minutes after 22:00 UTC,** so it did not open with FX.
+- **The made-up account run was not repeated on this commit,** because it means setting `TRADING_ACCOUNT_ID`.
+
+A rerun must cover all three instruments on one commit. Recording a result is itself a commit, so each rerun uses the new `HEAD` and gets new file names. Nothing is overwritten.
+
 ## Test and build results
 
 | Check | Result | Kind |
@@ -49,7 +70,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 | 1 | Active account equals the requested account, and a mismatch is refused | **PASS** | Verified | `btcusd-`, `eurusd-`, `gold-`, `wrongaccount-09244cf` | Real account ID through `TRADING_ACCOUNT_ID` not run. Only the owner sets it. Switching accounts is mock only, as the login has one account |
 | 2 | Financial fields parse, and unsent values stay null | **PASS**, parsing only | Verified | Same three instrument files | Values are compared under gate 5 |
 | 3 | Metadata parses for 2 or more asset classes | **PASS**, 3 classes | Verified | Same three instrument files | Dealing rules not confirmed against the platform |
-| 4 | Quote, candles, spread and freshness in market hours | **BLOCKED** | Verified for crypto. FX and gold unproven | BTCUSD passed. EURUSD and GOLD closed | Rerun all three on one commit once the broker reports Open |
+| 4 | Quote, candles, spread and freshness in market hours | **NOT PASSED** | Verified for crypto. FX and gold unproven | On `2c1e9ed`: BTCUSD passed, EURUSD open with a stale 1h snapshot, GOLD closed | Rerun all three on one commit once GOLD reports Open and a 1h bar has closed after the reopening |
 | 5 | Identity, balance, equity, funds, positions and working orders match the web platform | **BLOCKED** | User-dependent | Probe side only. [Checklist](../DEMO_GATE5_OWNER_CHECKLIST.md) | Owner fills the checklist. With no holdings, non-empty mapping stays mock only |
 | 6 | No order endpoint called | **PASS** | Verified | All four files | Measured by the adapter's write counter, with no wire capture |
 | 7 | Evidence holds no credential, token, session header or personal data | **Automated checks pass, owner review pending** | Verified, then user-dependent | Scan results below, sanitized report | Owner reads the sanitized report before sharing it |

@@ -24,6 +24,7 @@
 - Seventh CI run, on `9b486f7`: every step passed, including the smoke test at 19/19, except the manifest, which listed the built `wwwroot` files as changed. A CRLF checkout made the built `index.html` mix line endings. `.gitattributes` now pins these files to LF. The failure drill on `b12ac43` passed its check: the smoke test failed, the secret scan still ran, the run stayed red and no build was uploaded.
 - Eighth CI run, on `9c8cce6`: green on Windows for the first time under the new workflow. 100 unit tests passed, 229 of 232 integration tests passed with 3 skipped, the smoke test passed 19/19, and the secret scan found nothing in 522 files. The 370 files in the uploaded build match the manifest's hashes, and the build names its commit. Gate 8 passes on that commit, and the release commit needs its own green run.
 - Portable Windows package: `scripts/package-windows.ps1` builds a ZIP that CI verifies and smoke-tests after unzipping. A packaged build answers on `127.0.0.1:5099`, works from any folder and keeps its database in `%LOCALAPPDATA%\PilotTrade`. An older `pilottrade.db` in the working directory is not picked up. See `docs/WINDOWS_PORTABLE.md`.
+- Open-market evidence on `2c1e9ed`, 22:13 UTC: BTCUSD passed. EURUSD was open with its quote and candle steps passing, and its snapshot refused stale 1h candles. GOLD was still closed. Gate 4 has not passed, and no order endpoint was called.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)
