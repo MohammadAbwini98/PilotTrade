@@ -14,7 +14,8 @@ function ToolVersion($tool) {
 }
 
 $commit = (git rev-parse HEAD).Trim()
-$clean = -not (git status --porcelain)
+$changes = @(git status --porcelain)
+$clean = $changes.Count -eq 0
 
 # The step results come from the environment, because the quotes in JSON do not survive being passed as a process argument.
 $outcomes = [ordered]@{}
@@ -76,5 +77,5 @@ if ($env:GITHUB_STEP_SUMMARY) {
 }
 
 Write-Output "Manifest for $commit, $($files.Count) files, failed steps: $($failed.Count)."
-if ($RequireClean -and -not $clean) { Write-Output 'The working tree has changes, so this build does not match its commit.'; exit 1 }
+if ($RequireClean -and -not $clean) { Write-Output 'The working tree has changes, so this build does not match its commit:'; $changes | ForEach-Object { Write-Output $_ }; exit 1 }
 if ($outcomes['publish'] -eq 'success' -and -not $traceable) { Write-Output "The published version '$productVersion' does not name commit $commit."; exit 1 }

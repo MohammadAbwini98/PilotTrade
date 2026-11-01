@@ -20,6 +20,7 @@
 - Fifth CI run, on `89d78a7`: the Windows job is green, with the smoke test at 18/18 on PowerShell 7, 100 unit tests passed, 229 of 232 integration tests passed with 3 skipped, and no secret scan findings in 514 files. The run as a whole is red because the macOS smoke test failed: `Get-NetTCPConnection` exists only on Windows. macOS is out of scope, and gate 8 still needs a green Windows job on the release commit.
 - A malformed request body now answers 400 in the Development environment too, where it answered 500.
 - CI is Windows only. The secret scan runs even when an earlier step fails, and also covers test results and raw evidence file names. `scripts/release-manifest.ps1` ties a build to its commit with a SHA-256 for each file. The build is uploaded only when every step passed. On failure, only test results and the manifest are uploaded, and only after a clean scan. The rules are in `docs/WINDOWS_CI.md`.
+- Sixth CI run, on `cbc2a3e`: tests and publish passed, and the run failed. All 13 release checks passed, but their script ended on a leftover non-zero exit code, which also skipped the smoke test. The manifest step found a changed working tree after the build, and the changed files are not known yet, so that step now lists them.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)

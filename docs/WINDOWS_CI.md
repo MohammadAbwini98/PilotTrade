@@ -37,4 +37,4 @@ The manifest step fails if the working tree changed during the build, or if `Pil
 
 ## Failure drill
 
-To show that a failing smoke test still runs the scan and leaves the run red, push a throwaway branch whose `scripts/smoke-test.ps1` throws on its first line. Expect `smoke` to fail, `secret_scan` to run, no `win-x64-<sha>` artifact and a `diagnostics-<sha>` artifact. Delete the branch afterwards.
+To show that a failing smoke test still runs the scan and leaves the run red, push a throwaway branch whose `scripts/smoke-test.ps1` throws right after its `param` block. Expect `smoke` to fail, `secret_scan` to run, no `win-x64-<sha>` artifact and a `diagnostics-<sha>` artifact. Delete the branch afterwards.

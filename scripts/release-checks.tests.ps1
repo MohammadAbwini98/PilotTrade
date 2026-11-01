@@ -68,4 +68,6 @@ finally {
     Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# The explicit exit 0 matters: the last check above leaves a non-zero $LASTEXITCODE, and GitHub Actions exits with it.
 if ($script:failures -gt 0) { exit 1 }
+exit 0
