@@ -1,0 +1,4 @@
+# Vite adds lines with LF to the index.html it copies, so a CRLF checkout builds a file that differs from the committed one.
+src/PilotTrade.Web/index.html text eol=lf
+src/PilotTrade.Api/wwwroot/** text eol=lf
+src/PilotTrade.Api/wwwroot/**/*.svg text eol=lf
