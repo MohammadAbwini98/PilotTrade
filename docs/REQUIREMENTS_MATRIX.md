@@ -16,4 +16,4 @@
 | ENV-02 | Live locked on boot | PASS | Default TradingMode.MonitorOnly; LiveArmed false |
 | ENV-04 | AI cannot activate Live | PASS | No AI->control path |
 | OPS-02 | No secrets in logs | PARTIAL | Redaction not fully implemented |
-| PACK-01 | Packaging | BLOCKED | Not built for macOS; Windows build pending |
+| PACK-01 | Windows 10/11 x64 packaging | PARTIAL | win-x64 publish runs in CI; portable release is task 01-03. macOS is out of scope |

@@ -7,7 +7,7 @@ Current release status: [docs/DEMO_RELEASE_GO_NO_GO.md](docs/DEMO_RELEASE_GO_NO_
 ## Prerequisites
 - .NET 10 SDK
 - Node 20 (for the web build)
-- Windows 10/11 x64 or macOS Apple Silicon
+- Windows 10/11 x64, without administrator rights
 
 ## Build & Run
 ```
@@ -28,7 +28,7 @@ npm run lint --prefix src/PilotTrade.Web
 ```
 
 ## Configuration
-Copy `.env.example` for the available settings. Secrets live in Windows Credential Manager or the macOS keychain; see [the setup guide](docs/DEMO_AUTHENTICATION_AND_LOCAL_SETUP.md). Never commit credentials.
+Copy `.env.example` for the available settings. Secrets live in Windows Credential Manager; see [the setup guide](docs/DEMO_AUTHENTICATION_AND_LOCAL_SETUP.md). Never commit credentials.
 
 ## Safety
 - Live requests stop startup, and Capital.com order submission is disabled.

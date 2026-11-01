@@ -1,11 +1,11 @@
 # Demo Release Go/No-Go
 
-Status on 2026-11-01, 17:10 UTC, on commit `09244cf`:
+Windows 10 and 11 x64 only. Status on 2026-11-01, with probe evidence from commit `09244cf`. The baseline on `455a2fd`, with blocker owners and closure checks, is in `WINDOWS_RELEASE_BASELINE.md`.
 
-- **Read-only Demo: NO-GO.** Criteria 1, 2, 3 and 6 pass. Criterion 4 is blocked by closed FX and gold markets, 5 and 7 wait for the owner, 8 passes on `2db8417`, 9 has not run, and 10 fails. See `phase3/DEMO_ACCEPTANCE_09244cf.md`.
+- **Read-only Demo: NO-GO.** Criteria 1, 2, 3 and 6 pass on `09244cf`. Criterion 4 is blocked by closed FX and gold markets, 5 and 7 wait for the owner, 8 has no green run on the release commit, 9 is N/A, and 10 fails. See `phase3/DEMO_ACCEPTANCE_09244cf.md`.
 - **Demo execution: NO-GO, and disabled in code.** It needs separate authorization after the read-only gate passes.
 - **Live: LOCKED.** Any request for Live stops startup.
-- **macOS arm64: partly verified.** Tests, publish, the published smoke test with the owner flow, and the secret scan passed on a CI Mac on `2db8417`, using a throwaway keychain. The check with real credentials in the login keychain needs a real Mac.
+- **macOS: not supported, and not a release criterion.** The code and old evidence stay in place. CI on `2db8417` last passed there, using a throwaway keychain.
 
 ## Read-only gate
 
@@ -20,8 +20,8 @@ Every item must pass. Criteria 1 to 6 come from sanitized evidence files made by
 | 5 | Exposure: positions and working orders match the Capital.com Demo web platform at the same moment | Probe steps pass, and the owner compares the two by eye | **Blocked on the owner.** Use `DEMO_GATE5_OWNER_CHECKLIST.md`. 0 positions and 0 working orders returned, so non-empty parsing is unproven |
 | 6 | No order endpoint called | `OrderEndpointsCalled` is `false` in the evidence | **Passed on `09244cf`.** The value is measured by the adapter's write counter, and the order methods send nothing. There is no separate wire capture |
 | 7 | The evidence file holds no credential, token or full account ID | Owner review and `scripts/secret-scan.ps1` | **Scan clean, blocked on owner review.** The scans of all raw files found no credential, session header, personal detail or full ID. The masked ID keeps the last 4 digits, so the raw files stay ignored by git. `phase3/DEMO_EVIDENCE_SANITIZED_09244cf.md` is the version to share once the owner has read it |
-| 8 | CI passes on Windows and macOS, including the owner flow in the smoke test | Green run for the release commit | **Passed on `2db8417`.** Run 41341674927 is green on both systems. Windows: unit 100 passed, integration 224 passed, 3 skipped. macOS: unit 100 passed, integration 223 passed, 4 skipped. The smoke test with the owner flow passed, and the secret scan found nothing in 511 and 507 files, including publish output. Three earlier runs failed on faults in the two scripts, not in the application. The release commit needs its own green run |
-| 9 | Credentials work from the macOS keychain on a real Mac | Evidence run or `--show-owner-token` plus the macOS tests | Not run. Needs a Mac |
+| 8 | CI passes on Windows, including the owner flow in the smoke test | Green Windows job for the release commit | **Not passed on the release commit.** `2db8417` passed under the old two-system rule: run 41341674927 is green on both systems. Windows: unit 100 passed, integration 224 passed, 3 skipped. macOS: unit 100 passed, integration 223 passed, 4 skipped. The smoke test with the owner flow passed, and the secret scan found nothing in 511 and 507 files, including publish output. Three earlier runs failed on faults in the two scripts, not in the application. `455a2fd` and later commits have no run yet |
+| 9 | Former criterion: credentials work from the macOS keychain on a real Mac | None | **N/A, Windows only.** It never ran, and it is not a failure |
 | 10 | No known vulnerable dependency | NuGet and npm audits clean | **Fail.** NuGet is clean and production npm dependencies have 0 advisories, but the full npm audit reports 12 moderate in development tooling, all from `minimatch` under ESLint. No compatible fix exists yet. The owner may accept this residual, but it is not a pass |
 
 Any failure, or any evidence older than the commit being released, means NO-GO. A probe change or any later code commit therefore means repeating criteria 1 to 7.
