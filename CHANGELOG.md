@@ -28,6 +28,7 @@
 - Ninth CI run, on `22d9503`: green, with the smoke test at 27/27 and the portable ZIP built, verified and smoke-tested after unzipping, including the default address, per-user database, restart and older-database warning. 100 unit tests passed, 229 of 232 integration tests passed with 3 skipped, and the secret scan found nothing in 900 files. The standard-user checklist on Windows 10 and 11 has not been run, so task 01-03 is not complete.
 - Open-market evidence on `90d141b`, 22:44 UTC: the same result. BTCUSD passed, EURUSD's snapshot refused stale 1h candles, and GOLD was still closed. Gate 4 has not passed, and no order endpoint was called.
 - Open-market evidence on `993363a`, 23:16 UTC: BTCUSD and EURUSD passed. GOLD was open with its quote and candle steps passing, and its snapshot refused stale 1h candles. Gate 4 has not passed, and no order endpoint was called.
+- Open-market evidence on `4836181`, 00:08 UTC on 2026-11-02: BTCUSD, EURUSD and GOLD all reported Open and passed every step, including the snapshot. Gate 4 passes on that commit, and no order endpoint was called. Read-only Demo stays NO-GO, because gates 5, 7, 8 and 10 remain.
 - Demo execution stays disabled and Live stays locked.
 
 ## 0.1.0 (2026-10-31)

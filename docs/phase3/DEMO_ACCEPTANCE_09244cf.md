@@ -2,7 +2,7 @@
 
 Tested commit: `09244cf22769e0efba966643a3f962fd643bfa64`, on `feature/capital-demo-readonly-hardening`, clean working tree. Runs: 2026-11-01, 17:07 to 17:10 UTC (a Sunday, before the FX and gold open). This report and its documents follow in a docs-only commit. The only later code changes are corrections to `scripts/smoke-test.ps1`, which the probe does not use, but the go/no-go rule still asks for new evidence on the release commit.
 
-**Result: read-only Demo is NO-GO. Not ready for controlled Demo execution.** Gates 1, 2, 3 and 6 pass on this commit, and gate 8 passes on `2db8417`. Gate 4 is blocked by closed FX and gold markets. Gates 5 and 7 wait for the owner. Gate 9 has not run. Gate 10 still fails strictly on 12 moderate development-only npm advisories.
+**Result: read-only Demo is NO-GO. Not ready for controlled Demo execution.** Gates 1, 2, 3 and 6 pass on this commit, and gate 8 passes on `2db8417`. Gate 4 was blocked here by closed FX and gold markets, and passes on `4836181`, as recorded below. Gates 5 and 7 wait for the owner. Gate 8 needs a green Windows run on the release commit. Gate 9 is now N/A, as macOS is out of scope. Gate 10 still fails strictly on 12 moderate development-only npm advisories.
 
 No order was placed. Demo order submission stays disabled and Live stays locked. The branch was pushed only for CI, with owner approval for each push.
 
@@ -55,6 +55,23 @@ Runs: 2026-11-01, 23:16 UTC, on `993363a` with a clean working tree. The only ch
 - **GOLD reopened later than FX.** It reported Closed at 22:44 UTC and Open at 23:16 UTC. Its 600 missing bars match 50 hours at 5 minutes each, which points to a 23:00 UTC reopening. That time is an inference.
 - **GOLD's refusal looks like the one EURUSD had,** and no 1h bar could have closed since a 23:00 UTC reopening. Whether it clears is not yet shown. The first run that can test it is after 00:00 UTC, so the last retry is set for about 00:08 UTC, not 23:46 UTC.
 
+### Retry 3 on 4836181
+
+Runs: 2026-11-02, 00:08 UTC, on `4836181` with a clean working tree. The only changes since `2c1e9ed` are documents. Report: [DEMO_EVIDENCE_SANITIZED_4836181.md](DEMO_EVIDENCE_SANITIZED_4836181.md). The report script's checks passed, and all three raw files record `OrderEndpointsCalled=false`.
+
+| Instrument | Broker status | Quote age | Spread, limit | Candle close age, missing bars | Steps | Result |
+|---|---|---|---|---|---|---|
+| BTCUSD | Open | 0 s | 0.0639%, 1% | 227 s, 1 | 10 of 10 | **PASS** |
+| EURUSD | Open | 7 s | 0.0063%, 0.05% | 233 s, 589 | 10 of 10 | **PASS** |
+| GOLD | Open | 0 s | 0.0128%, 0.2% | 238 s, 600 | 10 of 10 | **PASS** |
+
+**Gate 4 passes on `4836181`.** All three reported Open and passed every step, including the snapshot, on one clean commit.
+
+- **GOLD's refusal cleared** on the first run after 00:00 UTC, as EURUSD's did. This fits a 1h bar closing after the reopening, though the 23:00 UTC reopening is still an inference.
+- **This is one reading per instrument,** in a Sunday session. It shows the checks pass on open markets, not that spreads stay inside their limits in other sessions.
+- **BTCUSD's 1 missing bar** is still there, and its cause is still unknown.
+- **The result holds for this code only.** Later documents do not change the code, but any later code commit means repeating the run.
+
 ## Test and build results
 
 | Check | Result | Kind |
@@ -98,7 +115,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 | 1 | Active account equals the requested account, and a mismatch is refused | **PASS** | Verified | `btcusd-`, `eurusd-`, `gold-`, `wrongaccount-09244cf` | Real account ID through `TRADING_ACCOUNT_ID` not run. Only the owner sets it. Switching accounts is mock only, as the login has one account |
 | 2 | Financial fields parse, and unsent values stay null | **PASS**, parsing only | Verified | Same three instrument files | Values are compared under gate 5 |
 | 3 | Metadata parses for 2 or more asset classes | **PASS**, 3 classes | Verified | Same three instrument files | Dealing rules not confirmed against the platform |
-| 4 | Quote, candles, spread and freshness in market hours | **NOT PASSED** | Verified for crypto. FX and gold unproven | On `993363a`: BTCUSD and EURUSD passed, GOLD open with a stale 1h snapshot | Rerun all three on one commit once a 1h bar has closed after GOLD's reopening |
+| 4 | Quote, candles, spread and freshness in market hours | **PASS** on `4836181` | Verified on crypto, FX and gold | `btcusd-`, `eurusd-`, `gold-4836181`: all Open, 10 of 10 steps | Repeat after any later code commit. Spread limits still need owner review |
 | 5 | Identity, balance, equity, funds, positions and working orders match the web platform | **BLOCKED** | User-dependent | Probe side only. [Checklist](../DEMO_GATE5_OWNER_CHECKLIST.md) | Owner fills the checklist. With no holdings, non-empty mapping stays mock only |
 | 6 | No order endpoint called | **PASS** | Verified | All four files | Measured by the adapter's write counter, with no wire capture |
 | 7 | Evidence holds no credential, token, session header or personal data | **Automated checks pass, owner review pending** | Verified, then user-dependent | Scan results below, sanitized report | Owner reads the sanitized report before sharing it |
@@ -143,7 +160,7 @@ The file set named `-NEWSHA` was not made in this work and appears to be owner-r
 
 ## Remaining steps
 
-**Gate 4, once the broker reports Open.** The FX and gold markets usually open around 22:00 UTC on Sunday. Every run must share one clean commit, so rebuild first, then run each instrument with a file name for the current commit:
+**Gate 4, to repeat it after a code commit.** On 2026-11-01, FX was open by 22:13 UTC and GOLD opened between 22:44 and 23:16 UTC. After a weekend, run once a 1h bar has closed since both reopened. Every run must share one clean commit, so rebuild first, then run each instrument with a file name for the current commit:
 
 ```powershell
 dotnet build PilotTrade.slnx -c Release --nologo -v q
@@ -160,6 +177,6 @@ powershell -NoProfile -File scripts/demo-evidence-report.ps1 -Sha $sha
 
 ## Decision
 
-- **Read-only Demo: NO-GO.** Gates 4, 5, 7, 9 and 10 have not passed.
+- **Read-only Demo: NO-GO.** Gates 5, 7 and 10 have not passed, and gate 8 has no green run on the release commit. Gate 4 passes on `4836181`, and gate 9 is N/A.
 - **Controlled Demo execution: not ready.** It needs the read-only gate, blockers 1 to 3 at least, and separate owner authorization.
 - **Live: locked.** No move to automated trading without explicit owner authorization after all gates pass.
