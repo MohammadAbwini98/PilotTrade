@@ -66,3 +66,9 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+/* A visible keyboard focus ring on every control, in both colour schemes. */
+:focus-visible {
+  outline: 3px solid #ffbf47; /* palette.focus in theme.ts */
+  outline-offset: 2px;
+}

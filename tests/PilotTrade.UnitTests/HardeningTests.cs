@@ -105,6 +105,49 @@ public class DecisionInvalidationTests
         service.Current("A", TradingEnvironment.Demo).Should().Be(second);
         service.Current("C", TradingEnvironment.Demo).Should().BeNull();
     }
+
+    private sealed class MemorySelectionStore : IInstrumentSelectionStore
+    {
+        public Dictionary<string, InstrumentSelection> Rows { get; } = new();
+        public int Highest { get; set; }
+        public IReadOnlyList<InstrumentSelection> LoadAll() => Rows.Values.ToList();
+        public int HighestStoredVersion() => Math.Max(Highest, Rows.Values.Select(r => r.SelectionVersion).DefaultIfEmpty(0).Max());
+        public void Save(InstrumentSelection s) => Rows[$"{s.Environment}:{s.AccountId}"] = s;
+    }
+
+    [Fact]
+    public void SelectionService_RestoresTheInstrument_ButNeverTheOldVersionOrId()
+    {
+        var store = new MemorySelectionStore();
+        var before = new InstrumentSelectionService(_clock, new GuidIdGenerator(), store).Select("A", TradingEnvironment.Demo, "GOLD", "owner");
+        store.Highest = 90;
+
+        var after = new InstrumentSelectionService(_clock, new GuidIdGenerator(), store);
+        var restored = after.Current("A", TradingEnvironment.Demo)!;
+        restored.Epic.Should().Be("GOLD");
+        restored.SelectionId.Should().NotBe(before.SelectionId);
+        restored.SelectionVersion.Should().BeGreaterThan(90);
+        restored.SelectedBy.Should().Be("restored");
+        // The restored version is stored too, so a second restart moves above it again.
+        store.Rows["Demo:A"].SelectionVersion.Should().Be(restored.SelectionVersion);
+        after.Select("A", TradingEnvironment.Demo, "EURUSD", "owner").SelectionVersion.Should().BeGreaterThan(restored.SelectionVersion);
+    }
+
+    [Fact]
+    public void SelectionService_ThatCannotStore_DoesNotChangeTheSelection()
+    {
+        var service = new InstrumentSelectionService(_clock, new GuidIdGenerator(), new FailingStore());
+        var act = () => service.Select("A", TradingEnvironment.Demo, "GOLD", "owner");
+        act.Should().Throw<IOException>();
+        service.Current("A", TradingEnvironment.Demo).Should().BeNull();
+    }
+
+    private sealed class FailingStore : IInstrumentSelectionStore
+    {
+        public IReadOnlyList<InstrumentSelection> LoadAll() => Array.Empty<InstrumentSelection>();
+        public int HighestStoredVersion() => 0;
+        public void Save(InstrumentSelection selection) => throw new IOException("disk full");
+    }
 }
 
 public class ExecutionIntegrityTests

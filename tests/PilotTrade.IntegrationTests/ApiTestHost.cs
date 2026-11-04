@@ -12,15 +12,19 @@ using Microsoft.Extensions.DependencyInjection;
 // never read a real credential, change the real owner token or reach the network.
 public sealed class ApiTestHost : WebApplicationFactory<Program>
 {
-    private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"pilottrade-test-{Guid.NewGuid():N}.db");
+    private readonly string _dbPath;
+    private readonly bool _ownsDatabase;
     private readonly Dictionary<string, string?> _settings;
 
     public InMemorySecretStore Secrets { get; } = new();
     public CapitalFake Capital { get; } = new(new SystemClock());
     public IPAddress RemoteAddress { get; set; } = IPAddress.Loopback;
 
-    public ApiTestHost(string mode = "simulation", string environment = "demo", string? account = null)
+    // A test that restarts the app passes its own databasePath and deletes it itself; otherwise each host has its own.
+    public ApiTestHost(string mode = "simulation", string environment = "demo", string? account = null, string? databasePath = null)
     {
+        _ownsDatabase = databasePath is null;
+        _dbPath = databasePath ?? NewDatabasePath();
         _settings = new()
         {
             ["ConnectionStrings:Default"] = $"Data Source={_dbPath}",
@@ -57,10 +61,22 @@ public sealed class ApiTestHost : WebApplicationFactory<Program>
         return client;
     }
 
+    public static string NewDatabasePath() => Path.Combine(Path.GetTempPath(), $"pilottrade-test-{Guid.NewGuid():N}.db");
+
+    public static void DeleteDatabase(string path)
+    {
+        SqliteConnection.ClearAllPools();
+        foreach (var file in new[] { path, path + "-wal", path + "-shm" })
+        {
+            try { File.Delete(file); } catch (IOException) { }
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
         SqliteConnection.ClearAllPools();
+        if (!_ownsDatabase) return;
         foreach (var path in new[] { _dbPath, _dbPath + "-wal", _dbPath + "-shm" })
         {
             try { File.Delete(path); } catch (IOException) { }

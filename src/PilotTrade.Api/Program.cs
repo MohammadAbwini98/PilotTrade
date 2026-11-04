@@ -7,6 +7,7 @@ using PilotTrade.Application.Services;
 using PilotTrade.Domain;
 using PilotTrade.Domain.Audit;
 using PilotTrade.Domain.Broker;
+using PilotTrade.Domain.Execution;
 using PilotTrade.Domain.Market;
 using PilotTrade.Domain.Security;
 using PilotTrade.Infrastructure.Audit;
@@ -59,7 +60,9 @@ builder.Services.AddSingleton<IBrokerSessionFactory>(sp => sp.GetRequiredService
 builder.Services.AddSingleton<IBrokerAdapter>(sp =>
     sp.GetRequiredService<IBrokerSessionFactory>().Create(sp.GetRequiredService<BrokerRuntimeOptions>().Environment));
 builder.Services.AddSingleton<IInstrumentCatalog>(sp => new InstrumentCatalogService(sp.GetRequiredService<IBrokerAdapter>()));
-builder.Services.AddSingleton<IInstrumentSelectionService, InstrumentSelectionService>();
+builder.Services.AddSingleton<IInstrumentSelectionStore, EfInstrumentSelectionStore>();
+builder.Services.AddSingleton<IInstrumentSelectionService>(sp => new InstrumentSelectionService(
+    sp.GetRequiredService<IClock>(), sp.GetRequiredService<IIdGenerator>(), sp.GetRequiredService<IInstrumentSelectionStore>()));
 builder.Services.AddSingleton<IMarketDataService>(sp => new MarketDataService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IRiskEngine, RiskEngine>();
 builder.Services.AddSingleton<IDecisionCoordinator, DecisionCoordinator>();
@@ -226,6 +229,38 @@ guarded.MapPost("/demo/configure-credentials", async (CredentialSetupRequest req
     }
     await audit.LogAsync(new AuditEvent(ids.NewId("audit"), clock.UtcNow, "Demo", "ConfigureCredentials", "owner", "demo", null, null, null, "{\"status\":\"configured\"}", true), ct);
     return Results.Ok(new { status = "configured" });
+});
+
+// Read-only evidence that no order left this app: the journal, stored intents and the broker adapter's own count of
+// non-session write requests. Owner-only, and it changes nothing.
+api.MapGet("/evidence/no-orders", async (string accountId, BrokerRuntimeOptions options, IBrokerAdapter broker, IOrderJournal journal,
+    DbContextOptions<PilotTradeDbContext> dbOptions, IClock clock, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var entries = await journal.ListAsync(options.Environment, accountId, ct);
+    await using var db = new PilotTradeDbContext(dbOptions);
+    var env = options.Environment.ToString();
+    var intents = await db.OrderIntents.CountAsync(x => x.AccountId == accountId && x.Environment == env, ct);
+    var capital = broker as CapitalComBrokerAdapter;
+    var submitted = entries.Count(e => e.SubmittedUtc is not null || e.BrokerDealReference is not null || e.BrokerDealId is not null);
+    var writes = capital?.NonSessionWriteRequests;
+    return Results.Ok(new
+    {
+        checkedUtc = clock.UtcNow,
+        mode = options.Mode.ToString(),
+        environment = env,
+        accountId,
+        adapter = capital is null ? "simulated" : "capital.com",
+        executionEnabled = broker.ExecutionEnabled,
+        liveLocked = true,
+        journalEntries = entries.Count,
+        journalEntriesSentToBroker = submitted,
+        journalStates = entries.GroupBy(e => e.State.ToString()).ToDictionary(g => g.Key, g => g.Count()),
+        orderIntents = intents,
+        // Counted since this process started; the simulator sends nothing anywhere, so it has no such count.
+        brokerWriteRequestsSinceStart = writes,
+        noOrderSent = submitted == 0 && (writes ?? 0) == 0
+    });
 });
 
 api.MapGet("/health/feed", (IMarketDataService mds, string epic) => Results.Ok(new { epic, health = mds.GetFeedHealth(epic).ToString(), lastQuoteUtc = mds.LastQuoteUtc(epic) }));

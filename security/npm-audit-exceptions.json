@@ -1,0 +1,18 @@
+{
+  "policy": "Development-only advisories may be accepted for a limited time with the owner's written approval. Production dependencies may have none.",
+  "exceptions": [
+    {
+      "advisory": "GHSA-g3hv-75wg-m249",
+      "package": "minimatch",
+      "severity": "moderate",
+      "scope": "development only: eslint 9.39.5, @eslint/eslintrc 3.3.7, @eslint/config-array 0.21.2 and @typescript-eslint/typescript-estree 8.72.1",
+      "fixedIn": "minimatch 11.0.1",
+      "reason": "No release of eslint, @eslint/eslintrc or typescript-eslint accepts minimatch 11 as of 2026-11-04. Forcing it would be an untested major-version override, and eslint 9 calls minimatch 3 as a function, which minimatch 11 does not export. The glob patterns come from this repository's own lint configuration, not from users, and none of these packages ships in the build.",
+      "recordedUtc": "2026-11-04",
+      "expires": "2027-02-04",
+      "status": "pending-owner-approval",
+      "approvedBy": null,
+      "approvedUtc": null
+    }
+  ]
+}

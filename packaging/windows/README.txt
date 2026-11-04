@@ -18,7 +18,7 @@ SETTINGS
 
 YOUR DATA
   %LOCALAPPDATA%\PilotTrade\pilottrade.db
-  This holds the order journal, audit log and kill-switch state. It is not in this folder.
+  This holds the order journal, audit log, kill-switch state and selected instrument. It is not in this folder.
   If an earlier build left a pilottrade.db elsewhere, this build does not use it and warns at startup.
   To keep that history, stop the app and copy the file to the path above before the first launch.
 
@@ -26,10 +26,14 @@ CHECK THE DOWNLOAD
   powershell -ExecutionPolicy Bypass -File Verify-Package.ps1
   Compare the ZIP itself with: Get-FileHash PilotTrade-win-x64.zip -Algorithm SHA256
 
-UPDATE OR GO BACK
-  Stop the app and keep the earlier unzipped folder. Unzip the new version beside it.
-  To go back, stop the app and run Start-PilotTrade.cmd from the earlier folder.
-  A newer version may have upgraded the database, so copy pilottrade.db somewhere safe before updating.
+BACK UP, UPDATE OR GO BACK
+  Close the PilotTrade window first. Before updating, back up your data:
+    powershell -ExecutionPolicy Bypass -File Backup-Data.ps1
+  Keep the earlier unzipped folder and unzip the new version beside it.
+  To go back, close the app, restore the backup if the newer version changed the database:
+    powershell -ExecutionPolicy Bypass -File Backup-Data.ps1 -Restore <backup folder>
+  then run Start-PilotTrade.cmd from the earlier folder. A restore keeps the files it replaces.
+  A restored instrument selection gets a new version, so nothing decided before the backup is reused.
 
 REMOVE
   Stop the app and delete this folder. Your data stays.

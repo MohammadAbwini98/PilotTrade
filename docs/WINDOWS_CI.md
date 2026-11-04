@@ -9,12 +9,14 @@ Each check is its own step, and the job summary lists every step's outcome. Any 
 | Area | Steps |
 |---|---|
 | Build | `npm_install`, `lint`, `frontend_build`, `publish`, `package` |
-| Dependency audit | `npm_audit`, `nuget_audit` |
-| Tests | `credential_tests`, `full_tests`, `helpers_pwsh`, `helpers_powershell`, `release_checks` |
+| Dependency audit | `npm_audit` (production, must be clean), `npm_audit_dev` (development, `scripts/npm-audit-policy.ps1`), `nuget_audit` |
+| Tests | `frontend_tests` (Vitest and Testing Library in jsdom, against a fake backend), `credential_tests`, `full_tests`, `helpers_pwsh`, `helpers_powershell`, `release_checks` |
 | Smoke | `smoke`: a disposable database and the simulator, with no broker key, live account or real order |
 | Secret scan | `secret_scan`: runs even when an earlier step failed |
 
 A green secret scan does not prove a secret is absent. It finds known shapes only.
+
+`npm_audit_dev` fails on a high or critical advisory, on any advisory without an entry in `security/npm-audit-exceptions.json`, and on an expired entry. An entry the owner has not approved passes with a `::warning::` and the step prints `RESULT: not clean`; it never prints `clean` while any advisory is open. `frontend_tests` writes `test-results/vitest-junit.xml`, which the secret scan reads and the failure upload includes.
 
 ## What gets uploaded
 

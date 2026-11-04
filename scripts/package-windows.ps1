@@ -20,6 +20,7 @@ Copy-Item (Join-Path $publish '*') $stage -Recurse -Force
 Get-ChildItem $stage -Recurse -File -Force | Where-Object { $_.Name -like '*.pdb' -or $_.Name -in 'appsettings.Development.json', 'createdump.exe', 'web.config' } | Remove-Item -Force
 Copy-Item (Join-Path $repo 'packaging\windows\*') $stage
 Copy-Item (Join-Path $PSScriptRoot 'verify-package.ps1') (Join-Path $stage 'Verify-Package.ps1')
+Copy-Item (Join-Path $PSScriptRoot 'backup-data.ps1') (Join-Path $stage 'Backup-Data.ps1')
 
 function RelativePaths {
     $found = [string[]]@(Get-ChildItem $stage -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($stage.Length + 1).Replace('\', '/') })

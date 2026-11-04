@@ -76,7 +76,7 @@ try {
     $unzipped = Join-Path $temp 'unzipped'
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $unzipped)
     $folder = Join-Path $unzipped 'PilotTrade-win-x64'
-    foreach ($name in 'PilotTrade.Api.exe', 'Start-PilotTrade.cmd', 'Show-Owner-Token.cmd', 'README.txt', 'appsettings.example.json', 'Verify-Package.ps1', 'SHA256SUMS.txt') {
+    foreach ($name in 'PilotTrade.Api.exe', 'Start-PilotTrade.cmd', 'Show-Owner-Token.cmd', 'README.txt', 'appsettings.example.json', 'Verify-Package.ps1', 'Backup-Data.ps1', 'SHA256SUMS.txt') {
         Check "The package holds $name" (Test-Path (Join-Path $folder $name))
     }
     Check 'Debug symbols do not ship' (-not (Test-Path (Join-Path $folder 'PilotTrade.Api.pdb')))
@@ -92,6 +92,55 @@ try {
     Remove-Item (Join-Path $folder 'extra.db')
     Set-Content (Join-Path $folder 'PilotTrade.Api.exe') 'tampered'
     Check 'A changed file fails verification' ((Run 'verify-package.ps1' @('-Folder', $folder)).Code -ne 0)
+
+    # The development audit policy, run on recorded audit output rather than the network.
+    function AuditFile($name, $severity, $ghsa) {
+        $json = '{"vulnerabilities":{"minimatch":{"via":[{"name":"minimatch","severity":"' + $severity + '","url":"https://github.com/advisories/' + $ghsa + '"}]},"eslint":{"via":["minimatch"]}}}'
+        $path = Join-Path $temp "$name.json"
+        Set-Content $path $json -Encoding utf8
+        return $path
+    }
+    function ExceptionFile($name, $expires, $status, $approvedBy) {
+        $by = if ($approvedBy) { '"' + $approvedBy + '"' } else { 'null' }
+        $json = '{"exceptions":[{"advisory":"GHSA-g3hv-75wg-m249","package":"minimatch","expires":"' + $expires + '","status":"' + $status + '","approvedBy":' + $by + '}]}'
+        $path = Join-Path $temp "$name.json"
+        Set-Content $path $json -Encoding utf8
+        return $path
+    }
+    $listed = AuditFile 'audit-listed' 'moderate' 'GHSA-g3hv-75wg-m249'
+    $pendingEx = ExceptionFile 'ex-pending' '2027-02-04' 'pending-owner-approval' $null
+    $pendingRun = Run 'npm-audit-policy.ps1' @('-AuditJson', $listed, '-ExceptionsPath', $pendingEx, '-Today', '2026-11-04')
+    Check 'A pending exception does not fail the run' ($pendingRun.Code -eq 0)
+    Check 'A pending exception is never reported as clean' ($pendingRun.Text -match 'not clean' -and $pendingRun.Text -match 'PENDING')
+    Check 'An expired exception fails' ((Run 'npm-audit-policy.ps1' @('-AuditJson', $listed, '-ExceptionsPath', $pendingEx, '-Today', '2027-02-05')).Code -ne 0)
+    $other = AuditFile 'audit-other' 'moderate' 'GHSA-0000-0000-0000'
+    Check 'An advisory with no exception fails' ((Run 'npm-audit-policy.ps1' @('-AuditJson', $other, '-ExceptionsPath', $pendingEx, '-Today', '2026-11-04')).Code -ne 0)
+    $high = AuditFile 'audit-high' 'high' 'GHSA-g3hv-75wg-m249'
+    Check 'A high advisory fails even with an exception' ((Run 'npm-audit-policy.ps1' @('-AuditJson', $high, '-ExceptionsPath', $pendingEx, '-Today', '2026-11-04')).Code -ne 0)
+    $approvedEx = ExceptionFile 'ex-approved' '2027-02-04' 'approved' 'owner'
+    $approvedRun = Run 'npm-audit-policy.ps1' @('-AuditJson', $listed, '-ExceptionsPath', $approvedEx, '-Today', '2026-11-04')
+    Check 'An approved exception passes and is still not clean' ($approvedRun.Code -eq 0 -and $approvedRun.Text -match 'owner-approved' -and $approvedRun.Text -notmatch 'PENDING')
+    Set-Content (Join-Path $temp 'audit-none.json') '{"vulnerabilities":{}}' -Encoding utf8
+    Check 'No advisories is clean' ((Run 'npm-audit-policy.ps1' @('-AuditJson', (Join-Path $temp 'audit-none.json'), '-ExceptionsPath', $pendingEx)).Text -match 'RESULT: clean')
+
+    # Backup and restore of the local database, on a stand-in data folder.
+    $data = Join-Path $temp 'data'
+    New-Item -ItemType Directory -Force $data | Out-Null
+    Check 'A backup with no database fails' ((Run 'backup-data.ps1' @('-DataFolder', $data)).Code -ne 0)
+    Set-Content (Join-Path $data 'pilottrade.db') 'journal v1' -Encoding ascii
+    Set-Content (Join-Path $data 'pilottrade.db-wal') 'wal v1' -Encoding ascii
+    Check 'A backup succeeds' ((Run 'backup-data.ps1' @('-DataFolder', $data)).Code -eq 0)
+    $backup = @(Get-ChildItem (Join-Path $data 'backups') -Directory)[0].FullName
+    Check 'The backup holds the database, its log and checksums' ((Test-Path (Join-Path $backup 'pilottrade.db')) -and (Test-Path (Join-Path $backup 'pilottrade.db-wal')) -and (Test-Path (Join-Path $backup 'SHA256SUMS.txt')))
+    Set-Content (Join-Path $data 'pilottrade.db') 'journal v2' -Encoding ascii
+    Check 'A restore succeeds' ((Run 'backup-data.ps1' @('-DataFolder', $data, '-Restore', $backup)).Code -eq 0)
+    Check 'A restore brings the backed-up database back' ((Get-Content (Join-Path $data 'pilottrade.db') -Raw).Trim() -eq 'journal v1')
+    $kept = @(Get-ChildItem $data -Directory -Filter 'replaced-*')
+    Check 'A restore keeps the files it replaced' ($kept.Count -eq 1 -and (Get-Content (Join-Path $kept[0].FullName 'pilottrade.db') -Raw).Trim() -eq 'journal v2')
+    Set-Content (Join-Path $backup 'pilottrade.db') 'tampered' -Encoding ascii
+    Set-Content (Join-Path $data 'pilottrade.db') 'journal v3' -Encoding ascii
+    Check 'A changed backup is refused' ((Run 'backup-data.ps1' @('-DataFolder', $data, '-Restore', $backup)).Code -ne 0)
+    Check 'A refused restore changes nothing' ((Get-Content (Join-Path $data 'pilottrade.db') -Raw).Trim() -eq 'journal v3')
 }
 finally {
     $env:STEP_RESULTS = ''

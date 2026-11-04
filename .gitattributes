@@ -5,3 +5,4 @@ src/PilotTrade.Api/wwwroot/** text eol=lf
 # Package files keep one form, so that the ZIP does not depend on how the repository was checked out.
 packaging/windows/** text eol=crlf
 scripts/verify-package.ps1 text eol=crlf
+scripts/backup-data.ps1 text eol=crlf

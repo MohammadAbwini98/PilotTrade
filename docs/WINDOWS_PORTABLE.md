@@ -15,13 +15,28 @@ A build counts as packaged when `wwwroot/index.html` sits beside the executable.
 
 **Migration:** a packaged build no longer uses a `pilottrade.db` in its working directory. An earlier published build's journal, audit log and kill-switch state do not carry over by themselves, and the app logs a warning at startup if it finds such a file beside the executable or in its working directory. To keep them, stop the app and copy that file to the per-user path before the first launch.
 
-## Rollback
+## Backup, restore and rollback
 
-1. Stop the app.
-2. Run `Start-PilotTrade.cmd` from the earlier unzipped folder.
-3. If the newer version upgraded the database, restore the copy taken before the update.
+The database holds the order journal, the audit log, the persistent kill switch and the selected instrument. Credentials and the owner token stay in Windows Credential Manager and are never in a backup. `scripts/backup-data.ps1`, shipped in the package as `Backup-Data.ps1`, does both directions; it refuses to run on the default folder while `PilotTrade.Api.exe` is running.
+
+**Before every update:**
+
+1. Close the PilotTrade window.
+2. `powershell -ExecutionPolicy Bypass -File Backup-Data.ps1` (in the PilotTrade folder) copies `pilottrade.db` and its `-wal` and `-shm` files to `%LOCALAPPDATA%\PilotTrade\backups\<UTC time>\` with a `SHA256SUMS.txt`.
+3. Keep the earlier unzipped folder; unzip the new version beside it, not over it.
+
+**Rollback:**
+
+1. Close the PilotTrade window.
+2. If the newer version changed the database, `powershell -ExecutionPolicy Bypass -File Backup-Data.ps1 -Restore <backup folder>`. It checks the backup against its checksums first and changes nothing if they differ. The files it replaces move to `%LOCALAPPDATA%\PilotTrade\replaced-<UTC time>\`; nothing is deleted.
+3. Run `Start-PilotTrade.cmd` from the earlier folder, and check that the version it shows is the earlier one.
+4. Check that the kill switch and journal look as they did before the update, and select the instrument again if needed.
+
+A restore cannot bring back authority for anything that was decided before the backup. At startup, the saved instrument selection is re-issued under a new id, marked `restored`, with a version above every stored selection, decision, AI analysis and order intent. A snapshot, AI decision or execution authorization for an earlier version is refused (`RestartPersistenceTests`).
 
 Check any copy with `Verify-Package.ps1`, and check the ZIP against `PilotTrade-win-x64.zip.sha256` and the `packageSha256` in the manifest.
+
+**Status: BLOCKED.** The backup and restore script is checked in CI on a stand-in folder (`scripts/release-checks.tests.ps1`). A rollback to an earlier package has not been run, because no earlier compatible portable package exists: the first one was built on `22d9503`. It can be run once a second package exists, using the steps above.
 
 ## Manual checklist
 
@@ -36,7 +51,9 @@ Run this on Windows 10 x64 and on Windows 11 x64, each under a standard, non-adm
 - [ ] Another device on the network cannot reach port 5099
 - [ ] No order was submitted, as the journal in the UI shows
 - [ ] After deleting the folder, the data under `%LOCALAPPDATA%\PilotTrade` remains
-- [ ] Rolling back to an earlier folder starts the earlier version
+- [ ] A backup taken with `backup-data.ps1` restores, and rolling back to an earlier folder starts the earlier version (BLOCKED until a second package exists)
+- [ ] Keyboard only: Tab reaches every control with a visible focus ring, and Enter works them
+- [ ] At 100%, 150% and 200% display scaling in Edge, nothing is cut off and no horizontal scrolling is needed
 
 ## CI evidence
 

@@ -22,12 +22,23 @@ jobs:
       - id: lint
         run: npm run lint
         working-directory: src/PilotTrade.Web
+      # Component tests against a fake backend; the JUnit file joins the .NET results, so the secret scan reads it too.
+      - name: Frontend tests
+        id: frontend_tests
+        run: npm test -- --outputFile.junit=../../test-results/vitest-junit.xml
+        working-directory: src/PilotTrade.Web
       - id: frontend_build
         run: npm run build
         working-directory: src/PilotTrade.Web
       - id: npm_audit
         run: npm audit --omit=dev
         working-directory: src/PilotTrade.Web
+      # Development advisories: fails on high or critical, on any advisory without an exception and on an expired exception.
+      # An exception still waiting for the owner's approval passes with a warning and is never reported as clean.
+      - name: Development dependency audit
+        id: npm_audit_dev
+        shell: pwsh
+        run: ./scripts/npm-audit-policy.ps1
       - name: Check for vulnerable NuGet packages
         id: nuget_audit
         shell: pwsh

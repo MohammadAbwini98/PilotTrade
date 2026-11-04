@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
+import { palette } from './theme'
 
 type Runtime = { mode: string; environment: string; accountId: string; executionEnabled: boolean; liveLocked: boolean }
 type AccountSummary = { accountId: string; name: string | null; status: string | null; currency: string | null; preferred: boolean }
@@ -9,7 +10,7 @@ type InstrumentMetadata = {
   minDealSize: number; maxDealSize: number; dealSizeStep: number
   minStopDistance: number | null; maxStopDistance: number | null; minStopDistanceUnit: number; maxStopDistanceUnit: number
 }
-type Selection = { epic: string; selectionVersion: number }
+type Selection = { epic: string; selectionVersion: number; selectedBy?: string }
 type Account = {
   accountId: string; currency: string; balance: number; equity: number | null; freeMargin: number | null
   marginUsed: number | null; unrealizedPnL: number; realizedPnLToday: number | null; equityIsDerived: boolean
@@ -19,6 +20,10 @@ type WorkingOrder = { orderId: string; epic: string; direction: number; type: nu
 type SnapshotResult = {
   outcome: 'NO_TRADE' | 'SNAPSHOT_READY'; reason: string | null
   snapshot: { epic: string; selectionVersion: number; asOfUtc: string; quote: { bid: number; ask: number; spread: number; sourceTimestampUtc: string } } | null
+}
+type NoOrderEvidence = {
+  checkedUtc: string; adapter: string; executionEnabled: boolean; liveLocked: boolean; journalEntries: number
+  journalEntriesSentToBroker: number; orderIntents: number; brokerWriteRequestsSinceStart: number | null; noOrderSent: boolean
 }
 type ProbeEvidence = { allPassed: boolean; orderEndpointsCalled: boolean; steps: { name: string; passed: boolean; detail: string | null }[] }
 
@@ -31,6 +36,10 @@ const DISTANCE_UNIT = ['points', '%']
 const show = (value: number | null | undefined, digits = 2) => (value === null || value === undefined ? 'not provided' : value.toFixed(digits))
 
 class ApiError extends Error {}
+class NotFound extends ApiError {}
+
+// A read is tried once more after a network failure; a write never is, so a POST cannot reach the server twice.
+const RETRY_DELAY_MS = 500
 
 export default function App() {
   // Held in memory only, so closing or reloading the page forgets the token.
@@ -48,6 +57,9 @@ export default function App() {
   const [instrument, setInstrument] = useState<InstrumentMetadata | null>(null)
   const [snapshot, setSnapshot] = useState<SnapshotResult | null>(null)
   const [evidence, setEvidence] = useState<ProbeEvidence | null>(null)
+  const [noOrders, setNoOrders] = useState<NoOrderEvidence | null>(null)
+  const [searched, setSearched] = useState(false)
+  const [busy, setBusy] = useState(0)
   const [err, setErr] = useState('')
   // Bumped on every account or instrument change, so a slow reply for the old choice cannot overwrite the new one.
   const generation = useRef(0)
@@ -55,8 +67,17 @@ export default function App() {
   const request = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const headers = new Headers(init?.headers)
     headers.set('X-PilotTrade-Owner-Token', ownerToken.current)
-    const r = await fetch(path, { ...init, headers })
+    const isRead = (init?.method ?? 'GET') === 'GET'
+    let r: Response
+    try { r = await fetch(path, { ...init, headers }) }
+    catch {
+      if (!isRead) throw new ApiError('The server could not be reached. The request was not repeated.')
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+      try { r = await fetch(path, { ...init, headers }) }
+      catch { throw new ApiError('The server could not be reached.') }
+    }
     if (r.status === 403) throw new ApiError('Refused: check the owner token.')
+    if (r.status === 404) throw new NotFound('Not found.')
     if (!r.ok) {
       const body = await r.json().catch(() => null) as { error?: string } | null
       throw new ApiError(`Request failed (${r.status}${body?.error ? `: ${body.error}` : ''}).`)
@@ -71,7 +92,9 @@ export default function App() {
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
+    setBusy(b => b + 1)
     try { await work() } catch (e) { setErr(e instanceof ApiError ? e.message : 'The request could not be completed.') }
+    finally { setBusy(b => b - 1) }
   }
 
   const clearInstrument = () => {
@@ -93,6 +116,19 @@ export default function App() {
     setOrders(o)
   }
 
+  // The backend keeps the owner's choice across restarts under a new, higher version; the instrument is checked afresh before it is shown.
+  const restoreSelection = async (id: string) => {
+    const current = generation.current
+    let saved: Selection
+    try { saved = await request<Selection>(`/api/instruments/selection?accountId=${encodeURIComponent(id)}`) }
+    catch (e) { if (e instanceof NotFound) return; throw e }
+    if (current !== generation.current) return
+    const meta = await request<InstrumentMetadata>(`/api/instruments/${encodeURIComponent(saved.epic)}?accountId=${encodeURIComponent(id)}`)
+    if (current !== generation.current) return
+    setSelection(saved)
+    setInstrument(meta)
+  }
+
   const switchAccount = (id: string) => guard(async () => {
     clearInstrument()
     setAccountId(id)
@@ -100,7 +136,9 @@ export default function App() {
     setAccount(null)
     setPositions([])
     setOrders([])
+    setNoOrders(null)
     await loadAccount(id)
+    await restoreSelection(id)
   })
 
   const connect = (e: FormEvent) => {
@@ -114,14 +152,17 @@ export default function App() {
       // Only the account the backend was configured with is ever selected, never a preferred or first one.
       const configured = list.filter(a => a.accountId === rt.accountId)
       setAccounts(configured)
-      if (configured.length === 0) throw new Error('The configured trading account is not available from the broker.')
+      if (configured.length === 0) throw new ApiError('The configured trading account is not available from the broker.')
       await switchAccount(configured[0].accountId)
     })
   }
 
   const search = (e: FormEvent) => {
     e.preventDefault()
-    void guard(async () => setInstruments(await request<InstrumentSummary[]>(`/api/instruments/search?q=${encodeURIComponent(q)}&limit=50`)))
+    void guard(async () => {
+      setInstruments(await request<InstrumentSummary[]>(`/api/instruments/search?q=${encodeURIComponent(q)}&limit=50`))
+      setSearched(true)
+    })
   }
 
   const select = (epic: string) => guard(async () => {
@@ -141,6 +182,12 @@ export default function App() {
     if (current === generation.current) setSnapshot(r)
   })
 
+  const checkNoOrders = () => guard(async () => {
+    const current = generation.current
+    const r = await request<NoOrderEvidence>(`/api/evidence/no-orders?accountId=${encodeURIComponent(accountId)}`)
+    if (current === generation.current) setNoOrders(r)
+  })
+
   const testConnection = () => guard(async () => setEvidence(await post<ProbeEvidence>('/api/demo/test-connection', {})))
 
   if (!runtime) {
@@ -148,23 +195,25 @@ export default function App() {
       <div style={page}>
         <h1>PilotTrade</h1>
         <form onSubmit={connect}>
-          <label htmlFor="owner-token">Owner token (from <code>PilotTrade.Api --show-owner-token</code>)</label>
+          <label htmlFor="owner-token">Owner token (run <code>Show-Owner-Token.cmd</code> in the PilotTrade folder)</label>
           <div style={{ marginTop: 8 }}>
             <input id="owner-token" type="password" autoComplete="off" value={tokenInput} onChange={e => setTokenInput(e.target.value)} />
-            <button type="submit" disabled={!tokenInput.trim()}>Connect</button>
+            <button type="submit" disabled={!tokenInput.trim() || busy > 0}>Connect</button>
           </div>
         </form>
+        {busy > 0 && <p role="status">Connecting…</p>}
         {err && <p role="alert" style={error}>{err}</p>}
       </div>
     )
   }
 
   return (
-    <div style={page}>
+    <div style={page} aria-busy={busy > 0}>
       <h1>PilotTrade</h1>
       <p>
         {runtime.mode} ({runtime.environment}) | Execution {runtime.executionEnabled ? 'ENABLED' : 'disabled'} | Live {runtime.liveLocked ? 'locked' : 'NOT LOCKED'}
       </p>
+      <p role="status">{busy > 0 ? 'Loading…' : ''}</p>
       {err && <p role="alert" style={error}>{err}</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
         <section>
@@ -187,6 +236,18 @@ export default function App() {
           {positions.length === 0 ? <p>None</p> : <ul>{positions.map(p => <li key={p.positionId}>{p.epic} {SIDE[p.direction]} {p.size} @ {show(p.openLevel, 5)} | P&amp;L {show(p.unrealizedPnL)}</li>)}</ul>}
           <h3>Working orders</h3>
           {orders.length === 0 ? <p>None</p> : <ul>{orders.map(o => <li key={o.orderId}>{o.epic} {SIDE[o.direction]} {ORDER_TYPE[o.type]} {o.size} @ {show(o.level, 5)}</li>)}</ul>}
+          <h3>No-order evidence</h3>
+          <button onClick={() => void checkNoOrders()} disabled={!accountId}>Check that no order was sent</button>
+          {noOrders && (
+            <dl aria-label="No-order evidence">
+              <dt>Result</dt><dd>{noOrders.noOrderSent ? 'No order sent' : 'AN ORDER WAS SENT'}</dd>
+              <dt>Adapter</dt><dd>{noOrders.adapter}</dd>
+              <dt>Journal entries</dt><dd>{noOrders.journalEntries} ({noOrders.journalEntriesSentToBroker} sent to the broker)</dd>
+              <dt>Order intents</dt><dd>{noOrders.orderIntents}</dd>
+              <dt>Broker write requests since start</dt><dd>{noOrders.brokerWriteRequestsSinceStart ?? 'not applicable (simulator)'}</dd>
+              <dt>Checked (UTC)</dt><dd>{noOrders.checkedUtc}</dd>
+            </dl>
+          )}
           <h3>Demo connection</h3>
           <button onClick={() => void testConnection()}>Run read-only check</button>
           {evidence && (
@@ -205,15 +266,16 @@ export default function App() {
           <ul style={{ listStyle: 'none', padding: 0, maxHeight: 300, overflow: 'auto' }}>
             {instruments.map(i => (
               <li key={i.epic}>
-                <button onClick={() => void select(i.epic)} aria-pressed={selection?.epic === i.epic} style={{ width: '100%', textAlign: 'left', background: selection?.epic === i.epic ? '#1f2a44' : 'transparent', color: 'inherit' }}>
+                <button onClick={() => void select(i.epic)} aria-pressed={selection?.epic === i.epic} style={{ width: '100%', textAlign: 'left', background: selection?.epic === i.epic ? palette.selected : 'transparent', color: 'inherit' }}>
                   {i.name} ({i.epic}) | {MARKET_STATUS[i.status] ?? 'Unknown'} | {show(i.bid, 5)} / {show(i.offer, 5)}
                 </button>
               </li>
             ))}
           </ul>
+          {searched && instruments.length === 0 && <p>No instruments found.</p>}
         </section>
         <section>
-          <h3>Selected: {selection ? `${selection.epic} (version ${selection.selectionVersion})` : 'none'}</h3>
+          <h3>Selected: {selection ? `${selection.epic} (version ${selection.selectionVersion}${selection.selectedBy === 'restored' ? ', restored after restart' : ''})` : 'none'}</h3>
           {instrument && (
             <dl>
               <dt>Name</dt><dd>{instrument.name}</dd>
@@ -238,5 +300,5 @@ export default function App() {
   )
 }
 
-const page: CSSProperties = { fontFamily: 'system-ui', padding: 16, background: '#0b1020', color: '#e6e6e6', minHeight: '100vh', boxSizing: 'border-box' }
-const error: CSSProperties = { color: '#ff8080' }
+const page: CSSProperties = { fontFamily: 'system-ui', padding: 16, background: palette.background, color: palette.text, minHeight: '100vh', boxSizing: 'border-box' }
+const error: CSSProperties = { color: palette.error }
