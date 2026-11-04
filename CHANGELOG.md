@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (2026-11-04)
+- Phase 02, task 02-01: the owner UI is now a control-center shell with nine sidebar sections, hash addresses, safety badges, a masked account, backend link state and last refresh time. It is split into typed modules with an injectable API client and a per-page error boundary. Sections without a backend API show "Not available". There is no backend change, and Demo execution stays disabled while Live stays locked.
+
 ## Unreleased (2026-10-31)
 - Capital.com Demo read-only hardening: explicit broker modes, account proof, real instrument metadata, market data validation, macOS keychain store, owner authorization, strict Origin and CSRF, patched Microsoft.OpenApi, expanded tests and CI.
 - Fixed quote parsing: `GET /markets?epics=` answers with `marketDetails`, not `markets`. Found by the owner's real Demo run, and confirmed on an open crypto market since.

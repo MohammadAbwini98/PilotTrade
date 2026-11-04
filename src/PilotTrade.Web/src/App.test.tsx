@@ -45,6 +45,7 @@ function defaults(): Record<string, Route> {
     },
     'POST /api/market/snapshot': { status: 200, body: { outcome: 'NO_TRADE', reason: 'Market closed', snapshot: null } },
     'GET /api/evidence/no-orders': { status: 200, body: noOrders },
+    'GET /api/demo/credential-status': { status: 200, body: { apiKeyPresent: true, identifierPresent: true, passwordPresent: false } },
   }
 }
 
@@ -56,6 +57,8 @@ function routeFor(method: string, path: string): Route | undefined {
 }
 
 beforeEach(() => {
+  // Every test starts on Overview, whatever page the previous one left in the address.
+  window.history.replaceState(null, '', '/')
   routes = defaults()
   calls = []
   vi.stubGlobal('fetch', async (input: string, init: RequestInit = {}) => {
@@ -89,11 +92,22 @@ async function connect(user = userEvent.setup()) {
   return user
 }
 
-async function searchAndSelect(user: ReturnType<typeof userEvent.setup>, epic: string) {
+type User = ReturnType<typeof userEvent.setup>
+
+// Opens a page from the sidebar, the way the owner would.
+async function goTo(user: User, label: string) {
+  await user.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('link', { name: label }))
+  await screen.findByRole('heading', { level: 1, name: label })
+}
+
+async function searchAndSelect(user: User, epic: string) {
+  if (!screen.queryByRole('textbox', { name: 'Search instruments' })) await goTo(user, 'Markets')
   await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'a')
   await user.click(screen.getByRole('button', { name: 'Search' }))
   await user.click(await screen.findByRole('button', { name: new RegExp(`\\(${epic}\\)`) }))
 }
+
+const PAGE_LABELS = ['Overview', 'Markets', 'AI Decisions', 'Risk Center', 'Orders & Positions', 'Audit & Alerts', 'Broker Settings', 'Strategy & AI Settings', 'System']
 
 const posts = () => calls.filter(c => c.method !== 'GET')
 
@@ -199,6 +213,7 @@ describe('instrument search and selection', () => {
   it('says so when a search finds nothing', async () => {
     routes['GET /api/instruments/search'] = { status: 200, body: [] }
     const user = await connect()
+    await goTo(user, 'Markets')
     await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'zzz')
     await user.click(screen.getByRole('button', { name: 'Search' }))
     expect(await screen.findByText('No instruments found.')).toBeTruthy()
@@ -216,8 +231,9 @@ describe('instrument search and selection', () => {
   })
 
   it('starts with no selection when none is saved', async () => {
-    await connect()
+    const user = await connect()
     expect(screen.getByRole('heading', { name: 'Selected: none' })).toBeTruthy()
+    await goTo(user, 'Markets')
     expect((screen.getByRole('button', { name: 'Build market snapshot' }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.queryByRole('alert')).toBeNull()
   })
@@ -295,7 +311,9 @@ describe('missing financial values', () => {
     expect(values('Margin used')).toBe('not provided')
     expect(values('Realized P&L today')).toBe('not provided')
     expect(values('Balance')).toBe('1000.00 USD')
+    await goTo(user, 'Orders & Positions')
     expect(screen.getByText(/EURUSD BUY 1/).textContent).toBe('EURUSD BUY 1 @ not provided | P&L not provided')
+    await goTo(user, 'Markets')
     await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'a')
     await user.click(screen.getByRole('button', { name: 'Search' }))
     expect((await screen.findByRole('button', { name: /\(GOLD\)/ })).textContent).toContain('not provided / not provided')
@@ -345,6 +363,7 @@ describe('zero-order guard', () => {
     await screen.findByText('EURUSD market')
     await user.click(screen.getByRole('button', { name: 'Build market snapshot' }))
     await screen.findByText(/NO_TRADE/)
+    await goTo(user, 'Orders & Positions')
     await user.click(screen.getByRole('button', { name: 'Check that no order was sent' }))
     await screen.findByLabelText('No-order evidence')
     for (const c of posts()) expect(['/api/instruments/select', '/api/market/snapshot', '/api/demo/test-connection']).toContain(c.path)
@@ -354,6 +373,7 @@ describe('zero-order guard', () => {
 
   it('shows the backend no-order evidence, and an order when one was sent', async () => {
     const user = await connect()
+    await goTo(user, 'Orders & Positions')
     await user.click(screen.getByRole('button', { name: 'Check that no order was sent' }))
     const panel = await screen.findByLabelText('No-order evidence')
     expect(within(panel).getByText('No order sent')).toBeTruthy()
@@ -366,9 +386,31 @@ describe('zero-order guard', () => {
     expect(within(panel).getByText('1 (1 sent to the broker)')).toBeTruthy()
   })
 
-  it('shows execution disabled and Live locked from the runtime', async () => {
+  it('shows the server-reported mode, demo execution disabled and Live locked in the header', async () => {
     await connect()
-    expect(screen.getByText(/Execution disabled \| Live locked/)).toBeTruthy()
+    const badges = within(screen.getByRole('list', { name: 'Safety state' })).getAllByRole('listitem').map(b => b.textContent)
+    expect(badges).toEqual(['Simulation', 'Demo execution disabled', 'Live locked'])
+  })
+
+  it('labels Capital.com Demo as read-only while demo execution is disabled', async () => {
+    routes['GET /api/runtime'] = { status: 200, body: { mode: 'CapitalDemo', environment: 'Demo', accountId: 'ACC-A', executionEnabled: false, liveLocked: true } }
+    await connect()
+    const badges = within(screen.getByRole('list', { name: 'Safety state' })).getAllByRole('listitem').map(b => b.textContent)
+    expect(badges).toEqual(['Capital.com Demo / Read-only', 'Demo execution disabled', 'Live locked'])
+  })
+
+  it('shows a loud warning if the server ever reports Live unlocked or demo execution enabled', async () => {
+    routes['GET /api/runtime'] = { status: 200, body: { mode: 'CapitalDemo', environment: 'Demo', accountId: 'ACC-A', executionEnabled: true, liveLocked: false } }
+    await connect()
+    const badges = within(screen.getByRole('list', { name: 'Safety state' })).getAllByRole('listitem').map(b => b.textContent)
+    expect(badges).toEqual(['Capital.com Demo', 'DEMO EXECUTION ENABLED', 'LIVE NOT LOCKED'])
+  })
+
+  it('a simulation with execution enabled is still only a simulation', async () => {
+    routes['GET /api/runtime'] = { status: 200, body: { mode: 'Simulation', environment: 'Demo', accountId: 'ACC-A', executionEnabled: true, liveLocked: true } }
+    await connect()
+    const badges = within(screen.getByRole('list', { name: 'Safety state' })).getAllByRole('listitem').map(b => b.textContent)
+    expect(badges).toEqual(['Simulation', 'Demo execution disabled', 'Live locked'])
   })
 })
 
@@ -380,7 +422,11 @@ describe('accessibility', () => {
     expect(document.activeElement).toBe(screen.getByLabelText(/owner token/i))
     await user.keyboard(`${TOKEN}{Enter}`)
     await screen.findByRole('heading', { name: /selected:/i })
-    await user.click(screen.getByRole('textbox', { name: 'Search instruments' }))
+    screen.getByRole('link', { name: 'Markets' }).focus()
+    await user.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Markets' }))
+    await user.tab()
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Search instruments' }))
     await user.keyboard('a{Enter}')
     const gold = await screen.findByRole('button', { name: /\(GOLD\)/ })
     gold.focus()
@@ -388,17 +434,23 @@ describe('accessibility', () => {
     expect(await screen.findByRole('heading', { name: 'Selected: GOLD (version 3)' })).toBeTruthy()
   })
 
-  it('gives every control an accessible name', async () => {
+  it('gives every control on every page an accessible name', async () => {
     const user = await connect()
     await searchAndSelect(user, 'EURUSD')
     await screen.findByText('EURUSD market')
-    for (const b of screen.getAllByRole('button')) expect(b.textContent?.trim()).not.toBe('')
-    for (const role of ['textbox', 'combobox'] as const) {
-      for (const el of screen.getAllByRole(role)) {
-        const named = el.getAttribute('aria-label') || (el.id && document.querySelector(`label[for="${el.id}"]`))
-        expect(named).toBeTruthy()
+    let fields = 0
+    for (const label of PAGE_LABELS) {
+      await goTo(user, label)
+      for (const b of screen.queryAllByRole('button')) expect(b.textContent?.trim()).not.toBe('')
+      for (const role of ['textbox', 'combobox'] as const) {
+        for (const el of screen.queryAllByRole(role)) {
+          const named = el.getAttribute('aria-label') || (el.id && document.querySelector(`label[for="${el.id}"]`))
+          expect(named).toBeTruthy()
+          fields++
+        }
       }
     }
+    expect(fields).toBeGreaterThanOrEqual(2)
   })
 
   it('announces loading, and errors as alerts', async () => {
@@ -446,5 +498,138 @@ describe('accessibility', () => {
     expect(ratio(palette.text, palette.selected)).toBeGreaterThanOrEqual(4.5)
     // A focus indicator needs 3:1 against what is next to it.
     expect(ratio(palette.focus, palette.background)).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('control center shell', () => {
+  it('lists every section in the sidebar and marks the open one', async () => {
+    await connect()
+    const nav = screen.getByRole('navigation', { name: 'Main' })
+    const links = within(nav).getAllByRole('link')
+    expect(links.map(l => l.textContent)).toEqual(PAGE_LABELS)
+    expect(links.filter(l => l.getAttribute('aria-current') === 'page').map(l => l.textContent)).toEqual(['Overview'])
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Overview')
+  })
+
+  it('opens a page by pointer, updates the address, and moves focus to the page heading', async () => {
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    expect(window.location.hash).toBe('#/risk')
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Risk Center' }))
+    expect(screen.getByRole('link', { name: 'Risk Center' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBeNull()
+  })
+
+  it('opens a page from the keyboard and follows the browser Back button', async () => {
+    const user = await connect()
+    screen.getByRole('link', { name: 'System' }).focus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('heading', { level: 1, name: 'System' })).toBeTruthy()
+    window.history.back()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+  })
+
+  it('keeps loaded data when moving between pages, without fetching it again', async () => {
+    const user = await connect()
+    const reads = calls.length
+    await goTo(user, 'Orders & Positions')
+    await goTo(user, 'Overview')
+    expect(screen.getByText('Balance').nextElementSibling!.textContent).toBe('1000.00 USD')
+    expect(calls.length).toBe(reads)
+  })
+
+  it('shows sections without a backend API as not available, with no sample figures', async () => {
+    const user = await connect()
+    for (const [label, title] of [['AI Decisions', 'AI decisions'], ['Audit & Alerts', 'Audit log and alerts'], ['Strategy & AI Settings', 'Strategy and AI settings']]) {
+      await goTo(user, label)
+      expect(screen.getByRole('heading', { level: 2, name: `${title}: Not available` })).toBeTruthy()
+      expect(document.querySelector('main')!.textContent).not.toMatch(/\d+\.\d{2}/)
+    }
+    await goTo(user, 'Risk Center')
+    expect(screen.getByRole('heading', { level: 2, name: 'Kill switch: Not available' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /kill|enable|live|unlock/i })).toBeNull()
+  })
+
+  it('names only the allowed AI providers', async () => {
+    const user = await connect()
+    await goTo(user, 'Strategy & AI Settings')
+    expect(document.body.textContent).not.toMatch(/gemini/i)
+    expect(document.body.textContent).toContain('Claude API and JEV/TypeSafe AI')
+  })
+
+  it('shows the account masked in the header and the account list', async () => {
+    await connect()
+    const header = screen.getByRole('banner')
+    expect(header.textContent).toContain('••••CC-A (Demo)')
+    expect(header.textContent).not.toContain('ACC-A')
+    const option = within(screen.getByRole('combobox', { name: 'Account' })).getByRole('option')
+    expect(option.textContent).not.toContain('ACC-A')
+  })
+
+  it('reports the backend link and the last refresh time from real replies only', async () => {
+    const user = await connect()
+    const header = within(screen.getByRole('banner'))
+    expect(header.getByText('Connected')).toBeTruthy()
+    expect(header.getByText(/^\d{2}:\d{2}:\d{2} UTC$/)).toBeTruthy()
+    // A wrong or rotated token is refused on every call, not just one.
+    for (const path of ['/api/account', '/api/positions', '/api/orders']) routes[`GET ${path}`] = { status: 403 }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Refused: check the owner token.')
+    expect(header.getByText('Refused')).toBeTruthy()
+  })
+
+  it('shows "Not available" for the last refresh before any account data has arrived', async () => {
+    const slow = deferred<Reply>()
+    routes['GET /api/account'] = () => slow.promise
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(screen.getByLabelText(/owner token/i), TOKEN)
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    const header = within(await screen.findByRole('banner'))
+    expect(header.getByText('Last refresh').nextElementSibling!.textContent).toBe('Not available')
+    slow.resolve({ status: 200, body: account })
+    await waitFor(() => expect(header.getByText('Last refresh').nextElementSibling!.textContent).toMatch(/UTC$/))
+  })
+
+  it('shows credential presence on Broker Settings, never a value, and offers no order controls', async () => {
+    const user = await connect()
+    await goTo(user, 'Broker Settings')
+    const presence = await screen.findByLabelText('Credential presence')
+    expect(within(presence).getByText('API key').nextElementSibling!.textContent).toBe('Stored')
+    expect(within(presence).getByText('Password').nextElementSibling!.textContent).toBe('Missing')
+    expect(screen.queryByRole('button', { name: /order|buy|sell|close|cancel/i })).toBeNull()
+  })
+
+  it('a page that fails to draw is replaced by a notice while the shell keeps working', async () => {
+    // A reply the page cannot draw must not take the header or the menu down with it.
+    routes['GET /api/positions'] = { status: 200, body: [null] }
+    const user = await connect()
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await goTo(user, 'Orders & Positions')
+    expect(screen.getByRole('heading', { level: 2, name: 'This page could not be shown' })).toBeTruthy()
+    expect(screen.getByRole('list', { name: 'Safety state' })).toBeTruthy()
+    await goTo(user, 'Overview')
+    expect(screen.getByText('Balance')).toBeTruthy()
+    quiet.mockRestore()
+  })
+
+  it('disconnect forgets the session and returns to the token form', async () => {
+    const user = await connect()
+    await goTo(user, 'System')
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
+    expect(screen.getByLabelText(/owner token/i)).toBeTruthy()
+    expect(document.body.textContent).not.toContain('1000.00')
+  })
+
+  it('keeps the new palette colours at WCAG AA contrast', () => {
+    const luminance = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const ratio = (a: string, b: string) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05) }
+    for (const bg of [palette.background, palette.surface, palette.selected]) {
+      for (const fg of [palette.text, palette.muted, palette.error, palette.warn, palette.ok]) expect(ratio(fg, bg)).toBeGreaterThanOrEqual(4.5)
+      expect(ratio(palette.focus, bg)).toBeGreaterThanOrEqual(3)
+    }
   })
 })
