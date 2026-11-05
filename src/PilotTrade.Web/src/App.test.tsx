@@ -29,6 +29,21 @@ const marketPolicy = {
   maxSpreadPercent: { Fx: 0.05, CryptoCfd: 1, Commodity: 0.2, Index: 0.2, Share: 0.5, Etf: 0.5 },
 }
 
+const aiStatus = {
+  runtimeWired: false, note: 'The decision pipeline is not connected to live AI in this build.', allowedProviders: ['Claude API', 'JEV/TypeSafe AI'], decisionsRecorded: 0,
+  providers: [{ name: 'Claude API', registered: false, credentialPresent: true }, { name: 'JEV/TypeSafe AI', registered: false, credentialPresent: false }],
+}
+const step = (provider: string, status: string, extra: Record<string, unknown> = {}) => ({
+  provider, status, model: null, latencyMs: null, inputTokens: null, outputTokens: null, costUsd: null, confidence: null, output: null, schemaValid: null, problem: null, ...extra,
+})
+const decisionRow = (id: string, extra: Record<string, unknown> = {}) => ({
+  decisionId: id, accountId: 'ACC-A', environment: 'Demo', epic: 'EURUSD', selectionVersion: 2, snapshotId: 'snap-1', snapshotAsOfUtc: '2026-11-05T11:59:00Z',
+  startedUtc: '2026-11-05T12:00:00Z', recordedUtc: '2026-11-05T12:00:01Z',
+  claude: step('Claude API', 'TimedOut', { latencyMs: 20000, problem: 'Timed out after 20 s' }), jev: step('JEV/TypeSafe AI', 'NotRun', { problem: 'Not asked: Claude did not succeed' }),
+  promptSha256: 'a'.repeat(64), promptChars: 321, promptStored: false, decision: 'NoTrade', noTradeReason: 'Claude API timed out: Timed out after 20 s',
+  riskVeto: null, strategyId: 'strategy', strategyVersion: '0', auditEventId: 'audit-1', ...extra,
+})
+
 let routes: Record<string, Route>
 let calls: Call[]
 
@@ -59,6 +74,8 @@ function defaults(): Record<string, Route> {
     'GET /api/watchlist': { status: 200, body: emptyWatchlist },
     'GET /api/market/watch': { status: 200, body: { checkedUtc: new Date().toISOString(), maxQuoteAgeSeconds: 60, watchlistVersion: 0, rows: [] } },
     'GET /api/market/policy': { status: 200, body: marketPolicy },
+    'GET /api/ai/status': { status: 200, body: aiStatus },
+    'GET /api/decisions': { status: 200, body: { total: 0, items: [] } },
   }
 }
 
@@ -66,6 +83,7 @@ function routeFor(method: string, path: string): Route | undefined {
   if (routes[`${method} ${path}`]) return routes[`${method} ${path}`]
   // GET /api/instruments/{epic} revalidates a restored selection.
   if (method === 'GET' && path.startsWith('/api/instruments/')) return routes['GET /api/instruments/{epic}']
+  if (method === 'GET' && path.startsWith('/api/decisions/')) return routes['GET /api/decisions/{id}']
   return undefined
 }
 
@@ -553,7 +571,7 @@ describe('control center shell', () => {
 
   it('shows sections without a backend API as not available, with no sample figures', async () => {
     const user = await connect()
-    for (const [label, title] of [['AI Decisions', 'AI decisions'], ['Audit & Alerts', 'Audit log and alerts'], ['Strategy & AI Settings', 'Strategy and AI settings']]) {
+    for (const [label, title] of [['Audit & Alerts', 'Audit log and alerts'], ['Strategy & AI Settings', 'Strategy and AI settings']]) {
       await goTo(user, label)
       expect(screen.getByRole('heading', { level: 2, name: `${title}: Not available` })).toBeTruthy()
       expect(document.querySelector('main')!.textContent).not.toMatch(/\d+\.\d{2}/)
@@ -978,5 +996,100 @@ describe('market monitor and watchlist', () => {
     await user.click(screen.getByRole('button', { name: 'Build market snapshot' }))
     expect((await screen.findByText(/NO_TRADE/)).textContent).toBe('NO_TRADE: Spread too wideLimit for FX: 0.05% of mid.')
     expect(readiness()).toBe('Blocked: Spread too wide')
+  })
+})
+
+describe('AI decisions (task 02-04)', () => {
+  const history = () => screen.getByRole('heading', { level: 2, name: 'Decision history' }).parentElement!
+  const cellsOf = (name: string) => Array.from(screen.getByRole('row', { name }).querySelectorAll('td')).map(td => td.textContent)
+
+  it('says runtime AI is not connected and that no decision exists yet, with key presence only', async () => {
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    expect(await screen.findByText('Runtime AI: not connected in this build')).toBeTruthy()
+    const providers = screen.getByRole('list', { name: 'Providers' }).textContent!
+    expect(providers).toContain('Claude API: client not registered, API key present')
+    expect(providers).toContain('JEV/TypeSafe AI: client not registered, API key missing')
+    expect(screen.getByLabelText('No decisions').textContent).toBe('No AI decisions recorded. Runtime AI is not connected, so none is expected yet.')
+    expect(document.body.textContent).not.toMatch(/gemini|fallback model/i)
+    expect(calls.find(c => c.path === '/api/decisions')!.url.searchParams.get('accountId')).toBe('ACC-A')
+    expect(posts().filter(c => c.path.includes('decision') || c.path.includes('/ai/'))).toEqual([])
+  })
+
+  it('shows a failed step as NO_TRADE with its reason and the selection it was made for', async () => {
+    routes['GET /api/decisions'] = { status: 200, body: { total: 1, items: [decisionRow('aidec-1')] } }
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    await screen.findByRole('row', { name: 'aidec-1' })
+    expect(cellsOf('aidec-1').slice(0, 6)).toEqual(['2026-11-05 12:00:01 UTC', 'EURUSD (v2)', 'Timed out', 'Not run', 'NO_TRADE', 'Claude API timed out: Timed out after 20 s'])
+  })
+
+  it('sends the chosen filters to the server', async () => {
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    await screen.findByLabelText('No decisions')
+    await user.type(screen.getByRole('textbox', { name: 'Instrument' }), 'GOLD')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Decision' }), 'NoTrade')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Step status' }), 'Rejected')
+    await user.click(within(history()).getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(calls.filter(c => c.path === '/api/decisions').length).toBe(2))
+    const p = calls.filter(c => c.path === '/api/decisions')[1].url.searchParams
+    expect([p.get('epic'), p.get('decision'), p.get('status'), p.get('accountId')]).toEqual(['GOLD', 'NoTrade', 'Rejected', 'ACC-A'])
+    await waitFor(() => expect(screen.getByLabelText('No decisions').textContent).toBe('No AI decisions recorded for these filters.'))
+  })
+
+  it('shows details with the audit and snapshot IDs, the prompt hash only, and "not provided" for missing values', async () => {
+    const rec = decisionRow('aidec-1')
+    routes['GET /api/decisions'] = { status: 200, body: { total: 1, items: [rec] } }
+    routes['GET /api/decisions/{id}'] = { status: 200, body: rec }
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    await user.click(await screen.findByRole('button', { name: 'Details for aidec-1' }))
+    const detail = (await screen.findByRole('heading', { level: 2, name: 'Decision aidec-1' })).parentElement!
+    expect(calls.find(c => c.path === '/api/decisions/aidec-1')!.url.searchParams.get('accountId')).toBe('ACC-A')
+    expect(detail.textContent).toContain('audit-1')
+    expect(detail.textContent).toContain('snap-1, as of 2026-11-05 11:59:00 UTC')
+    expect(detail.textContent).toContain(`SHA-256 ${'a'.repeat(64)}, 321 characters. Prompt text is not stored.`)
+    expect(detail.textContent).toContain('not evaluated: decisions are not turned into orders in this build')
+    const claude = within(detail).getByRole('region', { name: 'Claude API step' }).textContent!
+    expect(claude).toContain('Timed out (Timed out after 20 s)')
+    expect(claude).toContain('Costnot provided')
+    expect(claude).toContain('Tokens in / outnot provided / not provided')
+    expect(claude).not.toMatch(/\$0|0\.00/)
+    await user.click(within(detail).getByRole('button', { name: 'Close details' }))
+    expect(screen.queryByRole('heading', { level: 2, name: 'Decision aidec-1' })).toBeNull()
+  })
+
+  it('never shows a BUY when a step did not succeed, whatever the record says', async () => {
+    routes['GET /api/decisions'] = { status: 200, body: { total: 2, items: [
+      decisionRow('aidec-bad', { decision: 'Buy', noTradeReason: null }),
+      decisionRow('aidec-ok', { decision: 'Buy', noTradeReason: null, claude: step('Claude API', 'Succeeded', { output: 'Buy' }), jev: step('JEV/TypeSafe AI', 'Succeeded', { output: 'Buy' }) }),
+    ] } }
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    await screen.findByRole('row', { name: 'aidec-bad' })
+    expect(cellsOf('aidec-bad').slice(4, 6)).toEqual(['NO_TRADE', 'Inconsistent record: a step did not succeed'])
+    expect(cellsOf('aidec-ok')[4]).toBe('BUY candidate')
+    expect(history().textContent).toContain('A BUY or SELL candidate is not an order.')
+    expect(screen.queryByRole('button', { name: /place|submit|execute|order/i })).toBeNull()
+  })
+
+  it('drops a decision list that arrives after disconnect', async () => {
+    const slow = deferred<Reply>()
+    routes['GET /api/decisions'] = () => slow.promise
+    const user = await connect()
+    await goTo(user, 'AI Decisions')
+    await waitFor(() => expect(calls.some(c => c.path === '/api/decisions')).toBe(true))
+    await goTo(user, 'System')
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
+    slow.resolve({ status: 200, body: { total: 1, items: [decisionRow('aidec-late')] } })
+    await new Promise(r => setTimeout(r, 20))
+    routes['GET /api/decisions'] = { status: 200, body: { total: 0, items: [] } }
+    cleanup()
+    window.history.replaceState(null, '', '/')
+    const again = await connect()
+    await goTo(again, 'AI Decisions')
+    await screen.findByLabelText('No decisions')
+    expect(screen.queryByRole('row', { name: 'aidec-late' })).toBeNull()
   })
 })

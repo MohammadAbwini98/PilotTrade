@@ -70,3 +70,21 @@ public interface IJevEvaluator
 {
     Task<JevResult> EvaluateAsync(JevRequest request, CancellationToken ct);
 }
+
+/// The analysis request sent to Claude. Shared by the client and the decision record, which keeps only its SHA-256 and length.
+public static class ClaudePrompt
+{
+    public const string System = "You are a market analyst. Respond ONLY with valid JSON matching the required schema. No prose.";
+
+    public static string Build(ClaudeAnalysisRequest request) => global::System.Text.Json.JsonSerializer.Serialize(new
+    {
+        snapshotId = request.Snapshot.SnapshotId,
+        instrumentEpic = request.Snapshot.Epic,
+        environment = request.Snapshot.Environment.ToString().ToLowerInvariant(),
+        selectionVersion = request.Snapshot.SelectionVersion,
+        quote = request.Snapshot.Quote,
+        indicators = request.Snapshot.Indicators,
+        availableRiskBudget = request.AvailableRiskBudget,
+        currentExposure = request.CurrentExposureSameInstrument
+    });
+}

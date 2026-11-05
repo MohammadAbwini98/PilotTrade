@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using PilotTrade.Domain;
 using PilotTrade.Domain.AI;
+using PilotTrade.Domain.Decision;
 using PilotTrade.Domain.Security;
 
 public sealed class JevEvaluatorClient : IJevEvaluator
@@ -21,7 +22,7 @@ public sealed class JevEvaluatorClient : IJevEvaluator
     public async Task<JevResult> EvaluateAsync(JevRequest request, CancellationToken ct)
     {
         var start = _clock.UtcNow;
-        var apiKey = await _secrets.GetAsync($"typesafe:{_env}:api_key", ct) ?? throw new InvalidOperationException("Missing TypeSafe API key");
+        var apiKey = await _secrets.GetAsync($"typesafe:{_env}:api_key", ct) ?? throw new AiCredentialMissingException("TypeSafe");
         var body = new
         {
             model = request.ModelId,

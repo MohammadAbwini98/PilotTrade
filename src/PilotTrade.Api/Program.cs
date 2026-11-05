@@ -7,6 +7,7 @@ using PilotTrade.Application.Services;
 using PilotTrade.Domain;
 using PilotTrade.Domain.Audit;
 using PilotTrade.Domain.Broker;
+using PilotTrade.Domain.Decision;
 using PilotTrade.Domain.Execution;
 using PilotTrade.Domain.Market;
 using PilotTrade.Domain.Security;
@@ -67,6 +68,9 @@ builder.Services.AddSingleton<IInstrumentSelectionService>(sp => new InstrumentS
 builder.Services.AddSingleton(MarketDataPolicy.Default);
 builder.Services.AddSingleton<IMarketDataService>(sp => new MarketDataService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>(), sp.GetRequiredService<MarketDataPolicy>()));
 builder.Services.AddSingleton<IWatchlistStore, EfWatchlistStore>();
+// Task 02-04: decision history is read-only here. The AI clients and the pipeline are deliberately not registered:
+// runtime AI wiring belongs to the execution-readiness phase.
+builder.Services.AddSingleton<IDecisionEventStore, EfDecisionEventStore>();
 builder.Services.AddSingleton(sp => new MarketWatchService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>(), sp.GetRequiredService<MarketDataPolicy>()));
 builder.Services.AddSingleton<IRiskEngine, RiskEngine>();
 builder.Services.AddSingleton<IDecisionCoordinator, DecisionCoordinator>();
@@ -129,6 +133,19 @@ var api = app.MapGroup("/api").AddEndpointFilter(ApiSecurity.RequireOwner).AddEn
 var guarded = api.MapGroup("").AddEndpointFilter(ApiSecurity.RequireBrowserGuards);
 
 // One account per run: a route never reads or selects for an account other than the one explicitly configured.
+static object StepView(AiStepRecord s) => new
+{
+    provider = s.Provider, status = s.Status.ToString(), model = s.Model, latencyMs = s.LatencyMs, inputTokens = s.InputTokens,
+    outputTokens = s.OutputTokens, costUsd = s.CostUsd, confidence = s.Confidence, output = s.Output?.ToString(), schemaValid = s.SchemaValid, problem = s.Problem
+};
+
+static object DecisionView(DecisionEvent e) => new
+{
+    e.DecisionId, e.AccountId, environment = e.Environment.ToString(), e.Epic, e.SelectionVersion, e.SnapshotId, e.SnapshotAsOfUtc,
+    e.StartedUtc, e.RecordedUtc, claude = StepView(e.Claude), jev = StepView(e.Jev), e.PromptSha256, e.PromptChars,
+    promptStored = false, decision = e.Decision.ToString(), e.NoTradeReason, e.RiskVeto, e.StrategyId, e.StrategyVersion, e.AuditEventId
+};
+
 static IResult? RefuseAccount(BrokerRuntimeOptions options, string accountId) =>
     accountId == options.AccountId ? null : Results.Json(new { error = "AccountNotConfigured" }, statusCode: StatusCodes.Status403Forbidden);
 
@@ -231,6 +248,50 @@ api.MapGet("/market/policy", (MarketDataPolicy policy) => Results.Ok(new
     maxCandleAgeInBars = policy.MaxCandleAgeInBars,
     maxSpreadPercent = policy.MaxSpreadPercent.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
 }));
+
+// Task 02-04: read-only AI decision history. No prompt text, reply text or key is stored or returned.
+api.MapGet("/decisions", (string accountId, string? epic, string? decision, string? status, int? limit, BrokerRuntimeOptions options, IDecisionEventStore store) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    DecisionCandidate? d = null;
+    if (!string.IsNullOrWhiteSpace(decision))
+    {
+        if (!Enum.TryParse<DecisionCandidate>(decision, true, out var dv) || !Enum.IsDefined(dv)) return Results.BadRequest(new { error = "InvalidFilter", reason = "Unknown decision" });
+        d = dv;
+    }
+    AiStepStatus? st = null;
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        if (!Enum.TryParse<AiStepStatus>(status, true, out var sv) || !Enum.IsDefined(sv)) return Results.BadRequest(new { error = "InvalidFilter", reason = "Unknown status" });
+        st = sv;
+    }
+    var page = store.List(new DecisionQuery(accountId, options.Environment, string.IsNullOrWhiteSpace(epic) ? null : epic.Trim(), d, st, Math.Clamp(limit ?? 50, 1, 200)));
+    return Results.Ok(new { total = page.Total, items = page.Items.Select(DecisionView) });
+});
+
+api.MapGet("/decisions/{decisionId}", (string decisionId, string accountId, BrokerRuntimeOptions options, IDecisionEventStore store) =>
+    RefuseAccount(options, accountId) ?? (store.Get(accountId, options.Environment, decisionId) is { } e ? Results.Ok(DecisionView(e)) : Results.NotFound()));
+
+// Presence only, never the key. The clients are not registered, so no decision can be produced in this build.
+api.MapGet("/ai/status", async (string accountId, BrokerRuntimeOptions options, IDecisionEventStore store, ISecretStore secrets, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var env = options.Environment;
+    var claudeKey = !string.IsNullOrWhiteSpace(await secrets.GetAsync($"anthropic:{env}:api_key", ct));
+    var jevKey = !string.IsNullOrWhiteSpace(await secrets.GetAsync($"typesafe:{env}:api_key", ct));
+    return Results.Ok(new
+    {
+        runtimeWired = false,
+        note = "Runtime AI is not connected in this build. Decisions are recorded only once the execution-readiness phase wires Claude and JEV.",
+        allowedProviders = new[] { "Claude API", "JEV/TypeSafe AI" },
+        decisionsRecorded = store.List(new DecisionQuery(accountId, env, Limit: 1)).Total,
+        providers = new[]
+        {
+            new { name = "Claude API", registered = false, credentialPresent = claudeKey },
+            new { name = "JEV/TypeSafe AI", registered = false, credentialPresent = jevKey },
+        },
+    });
+});
 
 // Read-only Demo connection check. Returns sanitized evidence only.
 guarded.MapPost("/demo/test-connection", async (string? epic, BrokerAdapterFactory factory, BrokerRuntimeOptions options, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>

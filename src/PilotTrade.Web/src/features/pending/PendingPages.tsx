@@ -1,14 +1,6 @@
 import { Unavailable } from '../../components/Unavailable'
 
 // Sections whose backend APIs do not exist yet. They say so rather than showing sample data.
-export function AiDecisionsPage() {
-  return (
-    <div className="grid">
-      <Unavailable title="AI decisions">The backend has no AI decision API yet (task 02-04). No decision has been made or shown.</Unavailable>
-    </div>
-  )
-}
-
 export function AuditPage() {
   return (
     <div className="grid">

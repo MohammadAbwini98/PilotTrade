@@ -243,3 +243,83 @@ New frontend tests:
 - A closed market blocks readiness, and a NO_TRADE names the limit behind it.
 
 Recommendation: **PARTIAL**. The code and all local checks pass. Windows CI passes. Still open: the owner's visual check and a real Demo check.
+
+## 02-04: Claude and JEV decision monitoring
+
+### AI service inventory
+
+| Piece | State before 02-04 | State after 02-04 |
+|---|---|---|
+| `ClaudeAnalystClient` (Claude API) | implemented, not registered at runtime | still not registered. Uses the shared `ClaudePrompt`. A missing key throws `AiCredentialMissingException`, and a reply for another snapshot or selection throws `AiSchemaException`. |
+| `JevEvaluatorClient` (JEV/TypeSafe AI) | implemented, not registered at runtime | still not registered. Same exception changes. |
+| `DecisionCoordinator` | registered, never called | unchanged; called by the new pipeline in tests only |
+| `AiDecisionPipeline` | missing | **new, not registered**: asks Claude, then JEV, and records one decision event |
+| Decision event store and history API | missing | **new**: `DecisionEvents` table, `GET /api/decisions`, `GET /api/decisions/{id}`, `GET /api/ai/status` |
+| Old `Decisions`, `ClaudeAnalyses`, `JevEvaluations` tables | exist, unused | unchanged and unused |
+| Other providers (Gemini or any fallback) | none | none. There is no fallback and no mocked answer. |
+
+Runtime AI is **not connected** in this build. Wiring the pipeline to live Claude and JEV belongs to the execution-readiness phase. The panel says so, and `GET /api/ai/status` reports `runtimeWired: false`. No real decision exists, so the history is empty on a real install.
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Domain/Decision/DecisionEvents.cs` | `AiStepStatus` (Disabled, Unavailable, TimedOut, Rejected, Succeeded, NotRun), `AiStepRecord`, `DecisionEvent`, `DecisionQuery`, `DecisionPage`, `IDecisionEventStore`, `AiCredentialMissingException`, `AiSchemaException`. |
+| `src/PilotTrade.Domain/AI/AIContracts.cs` | `ClaudePrompt`: the one place the Claude request is built. The decision record keeps only its SHA-256 and length. |
+| `src/PilotTrade.Infrastructure/AI/ClaudeAnalystClient.cs`, `JevEvaluatorClient.cs` | Use `ClaudePrompt`; typed exceptions for a missing key and a mismatched reply. |
+| `src/PilotTrade.Application/Services/AiDecisionPipeline.cs` | Claude first; JEV only if Claude succeeded. Per-step timeouts (20 s and 10 s by default). Every failure ends in NO_TRADE with a fixed reason: disabled, client missing, key missing, timeout, invalid schema, HTTP error or anything unexpected. Provider messages are never kept, since they could echo a prompt, header or key. A JEV direction must be an enum name, so `"1"` is refused. A JEV reply for another snapshot, instrument, selection, account or environment is refused. A trade candidate needs both steps to succeed and the coordinator to agree. A cancelled caller records nothing. |
+| `src/PilotTrade.Infrastructure/Persistence/Entities.cs`, `PilotTradeDbContext.cs` | `DecisionEventEntity`, index on (Environment, AccountId, RecordedTicks). |
+| `src/PilotTrade.Infrastructure/Persistence/EfDecisionEventStore.cs` | Writes the decision and an audit event (Category `Decision`, Action `AiDecisionRecorded`, correlation ID = decision ID, with the selection version) in one save. Lists newest first with filters, at most 200. Reads are scoped to the account and environment. A stored BUY or SELL whose steps did not both succeed is shown as NO_TRADE. |
+| `src/PilotTrade.Infrastructure/Migrations/20261105193921_AddDecisionEvents*.cs`, `PilotTradeDbContextModelSnapshot.cs` | **Migration:** adds the table `DecisionEvents` and its index. It only adds. |
+| `src/PilotTrade.Api/Program.cs` | Registers the store only; the AI clients and pipeline stay unregistered. **API change:**<br>• `GET /api/decisions?accountId=&epic=&decision=&status=&limit=`: 400 `InvalidFilter` for an unknown decision or status<br>• `GET /api/decisions/{id}?accountId=`: 404 when missing<br>• `GET /api/ai/status?accountId=`: `runtimeWired`, a note, the allowed providers, the number recorded, and per provider `registered` and `credentialPresent` (never a value)<br>All three need the owner token and the configured account. They are read-only. |
+| `tests/PilotTrade.UnitTests/AiDecisionPipelineTests.cs` | 18 new tests (below). |
+| `tests/PilotTrade.IntegrationTests/DecisionHistoryTests.cs` | 6 new tests (below). |
+| `src/PilotTrade.Web/src/types/api.ts`, `hooks/useOwnerSession.ts` | Decision types and state. A generation counter drops a reply that is overtaken or that arrives after an account switch or disconnect. |
+| `src/PilotTrade.Web/src/features/ai/AiDecisionsPage.tsx` | **Providers panel:** runtime state, each provider's client and key presence, the allowed providers.<br>**History table** with instrument, decision and step-status filters: recorded time, instrument and selection version, Claude and JEV status, decision, NO_TRADE reason.<br>**Detail:** decision, snapshot and audit IDs, strategy, prompt hash and length ("Prompt text is not stored"), and per step the model, schema result, confidence, latency, tokens and cost, with "not provided" for missing values.<br>A BUY or SELL whose steps did not both succeed is shown as NO_TRADE here too. |
+| `src/PilotTrade.Web/src/app/Shell.tsx`, `features/pending/PendingPages.tsx` | The AI Decisions section now opens the new page. |
+| `src/PilotTrade.Web/src/App.test.tsx` | 6 new tests (below); the "not available" test no longer covers AI Decisions. |
+| `src/PilotTrade.Api/wwwroot/*` | rebuilt asset `index-TmWzEAIe.js`; the old one is removed |
+
+No order path was added. A BUY or SELL candidate is labeled as not an order. The risk column says "not evaluated", because decisions are not turned into orders in this build.
+
+### Acceptance
+
+- **Traceable:** each decision has its own ID, an audit row with the same correlation ID, the snapshot ID and time, and the instrument and selection version. An integration test checks the audit row.
+- **NO_TRADE on failure:** unit tests cover an invalid schema, a timeout, an HTTP error, a missing key, a missing client, an unexpected exception, an invalid JEV direction, a mismatched JEV reply, disagreement and a changed selection.
+- **No leak:** tests check that a planted secret in a provider message reaches neither the record nor the API reply, that the prompt text is not stored, and that the status endpoint shows presence only. Logs: the pipeline logs nothing.
+
+### Migration, restart, backup and rollback
+
+- The `AddDecisionEvents` migration runs at startup and only adds a table. **Restart the API** after updating to apply it.
+- Back up first: stop the API, then run `scripts/backup-data.ps1`.
+- Rollback: stop the API, restore the backup, and run the previous build. The previous build also runs on the new database, since it ignores the extra table.
+
+### Limits
+
+- Runtime AI is not connected, so no real decision can be made or shown. The history is checked only with records written by tests.
+- Costs are not computed by the Claude client, so cost shows "not provided".
+- Not checked: the owner's visual check and Windows CI on this commit.
+
+### Results after 02-04
+
+| Check | Result |
+|---|---|
+| `npx vitest run` | 69/69 passed (63 earlier + 6 new) |
+| `npx tsc --noEmit`, `npm run lint` | clean |
+| `npm run build` | new `wwwroot` asset, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 138/138 (18 new); integration 252 passed, 3 skipped, 0 failed (255; 6 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
+| `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
+| `scripts/secret-scan.ps1` | no findings in 196 files |
+| CI on the 02-04 commit | not run yet: CI needs a push, and a push needs the owner's approval |
+
+New frontend tests:
+
+- Runtime AI shows as not connected, with key presence only and an empty history; no write is sent, and no other provider is named.
+- A failed step shows NO_TRADE with its reason and the selection version.
+- The filters are sent to the server.
+- The detail shows the audit and snapshot IDs and the prompt hash only, with "not provided" for missing values.
+- A stored BUY whose steps did not both succeed shows as NO_TRADE.
+- A list reply that arrives after disconnect is dropped.
+
+Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI, the owner's visual check, and runtime wiring in the execution-readiness phase.

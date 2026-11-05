@@ -164,3 +164,31 @@ public class WatchlistEntity
     public DateTimeOffset UpdatedUtc { get; set; }
     public string UpdatedBy { get; set; } = "";
 }
+
+// Task 02-04: one row per AI decision attempt. Metadata only: no prompt text, model output text or provider messages.
+public class DecisionEventEntity
+{
+    public string DecisionId { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string Epic { get; set; } = "";
+    public int SelectionVersion { get; set; }
+    public string SnapshotId { get; set; } = "";
+    public DateTimeOffset SnapshotAsOfUtc { get; set; }
+    public DateTimeOffset StartedUtc { get; set; }
+    public DateTimeOffset RecordedUtc { get; set; }
+    // UtcTicks of RecordedUtc: SQLite cannot order by DateTimeOffset.
+    public long RecordedTicks { get; set; }
+    public string ClaudeStatus { get; set; } = "";
+    public string JevStatus { get; set; } = "";
+    public string ClaudeJson { get; set; } = "";
+    public string JevJson { get; set; } = "";
+    public string? PromptSha256 { get; set; }
+    public int? PromptChars { get; set; }
+    public string Decision { get; set; } = "";
+    public string? NoTradeReason { get; set; }
+    public string? RiskVeto { get; set; }
+    public string StrategyId { get; set; } = "";
+    public string StrategyVersion { get; set; } = "";
+    public string AuditEventId { get; set; } = "";
+}

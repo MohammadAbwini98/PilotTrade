@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using PilotTrade.Domain;
 using PilotTrade.Domain.AI;
+using PilotTrade.Domain.Decision;
 using PilotTrade.Domain.Market;
 using PilotTrade.Domain.Security;
 
@@ -22,8 +23,8 @@ public sealed class ClaudeAnalystClient : IClaudeAnalyst
     public async Task<ClaudeAnalysisResult> AnalyzeAsync(ClaudeAnalysisRequest request, CancellationToken ct)
     {
         var start = _clock.UtcNow;
-        var system = "You are a market analyst. Respond ONLY with valid JSON matching the required schema. No prose.";
-        var user = BuildUser(request);
+        var system = ClaudePrompt.System;
+        var user = ClaudePrompt.Build(request);
         var body = new
         {
             model = _modelId,
@@ -54,10 +55,10 @@ public sealed class ClaudeAnalystClient : IClaudeAnalyst
         var epic = root.GetProperty("instrumentEpic").GetString();
         var env = root.GetProperty("environment").GetString();
         var sel = root.GetProperty("selectionVersion").GetInt32();
-        if (snapId != request.Snapshot.SnapshotId) throw new InvalidOperationException("snapshotId mismatch");
-        if (epic != request.Snapshot.Epic) throw new InvalidOperationException("epic mismatch");
-        if (env != request.Snapshot.Environment.ToString().ToLowerInvariant()) throw new InvalidOperationException("environment mismatch");
-        if (sel != request.Snapshot.SelectionVersion) throw new InvalidOperationException("selectionVersion mismatch");
+        if (snapId != request.Snapshot.SnapshotId) throw new AiSchemaException("Reply names a different snapshot");
+        if (epic != request.Snapshot.Epic) throw new AiSchemaException("Reply names a different instrument");
+        if (env != request.Snapshot.Environment.ToString().ToLowerInvariant()) throw new AiSchemaException("Reply names a different environment");
+        if (sel != request.Snapshot.SelectionVersion) throw new AiSchemaException("Reply names a different selection");
 
         var validUntil = root.TryGetProperty("validUntilUtc", out var vu) ? DateTimeOffset.Parse(vu.GetString()!) : _clock.UtcNow.AddMinutes(5);
 
@@ -74,26 +75,11 @@ public sealed class ClaudeAnalystClient : IClaudeAnalyst
     }
 
     private async Task<string> GetKeyAsync(CancellationToken ct) =>
-        await _secrets.GetAsync($"anthropic:{_env}:api_key", ct) ?? throw new InvalidOperationException("Missing Anthropic API key");
+        await _secrets.GetAsync($"anthropic:{_env}:api_key", ct) ?? throw new AiCredentialMissingException("Anthropic");
 
     private static List<string> ReadStringArray(JsonElement root, string name)
     {
         if (!root.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return new();
         return arr.EnumerateArray().Select(x => x.GetString() ?? "").ToList();
-    }
-
-    private static string BuildUser(ClaudeAnalysisRequest request)
-    {
-        return JsonSerializer.Serialize(new
-        {
-            snapshotId = request.Snapshot.SnapshotId,
-            instrumentEpic = request.Snapshot.Epic,
-            environment = request.Snapshot.Environment.ToString().ToLowerInvariant(),
-            selectionVersion = request.Snapshot.SelectionVersion,
-            quote = request.Snapshot.Quote,
-            indicators = request.Snapshot.Indicators,
-            availableRiskBudget = request.AvailableRiskBudget,
-            currentExposure = request.CurrentExposureSameInstrument
-        });
     }
 }

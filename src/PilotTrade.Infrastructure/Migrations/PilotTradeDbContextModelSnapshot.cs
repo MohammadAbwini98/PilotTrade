@@ -202,6 +202,93 @@ namespace PilotTrade.Infrastructure.Migrations
                     b.ToTable("Decisions");
                 });
 
+            modelBuilder.Entity("PilotTrade.Infrastructure.Persistence.DecisionEventEntity", b =>
+                {
+                    b.Property<string>("DecisionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AccountId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AuditEventId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClaudeJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClaudeStatus")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Epic")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("JevJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("JevStatus")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NoTradeReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("PromptChars")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PromptSha256")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("RecordedTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("RecordedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RiskVeto")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SelectionVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("SnapshotAsOfUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SnapshotId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("StartedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StrategyId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StrategyVersion")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("DecisionId");
+
+                    b.HasIndex("Environment", "AccountId", "RecordedTicks");
+
+                    b.ToTable("DecisionEvents");
+                });
+
             modelBuilder.Entity("PilotTrade.Infrastructure.Persistence.ExecutionStateEntity", b =>
                 {
                     b.Property<string>("Id")

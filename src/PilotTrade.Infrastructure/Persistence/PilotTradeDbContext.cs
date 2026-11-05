@@ -17,6 +17,7 @@ public class PilotTradeDbContext : DbContext
     public DbSet<ExecutionStateEntity> ExecutionStates => Set<ExecutionStateEntity>();
     public DbSet<OrderJournalEntity> OrderJournals => Set<OrderJournalEntity>();
     public DbSet<WatchlistEntity> Watchlists => Set<WatchlistEntity>();
+    public DbSet<DecisionEventEntity> DecisionEvents => Set<DecisionEventEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -32,5 +33,7 @@ public class PilotTradeDbContext : DbContext
         modelBuilder.Entity<OrderJournalEntity>().HasKey(x => x.CommandId);
         modelBuilder.Entity<WatchlistEntity>().HasKey(x => x.Id);
         modelBuilder.Entity<WatchlistEntity>().Property(x => x.Version).IsConcurrencyToken();
+        modelBuilder.Entity<DecisionEventEntity>().HasKey(x => x.DecisionId);
+        modelBuilder.Entity<DecisionEventEntity>().HasIndex(x => new { x.Environment, x.AccountId, x.RecordedTicks });
     }
 }

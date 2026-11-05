@@ -49,6 +49,23 @@ export type ProbeEvidence = { allPassed: boolean; orderEndpointsCalled: boolean;
 export type CredentialStatus = { apiKeyPresent: boolean; identifierPresent: boolean; passwordPresent: boolean }
 // GET /api/status: the server's own safety state. Feed health is known only for the selected instrument.
 export type FeedHealth = 'Healthy' | 'Stale' | 'Disconnected' | 'Unknown'
+// Task 02-04. AI decision history: metadata only. Prompt text and reply text are never stored or sent.
+export type AiStepStatus = 'Disabled' | 'Unavailable' | 'TimedOut' | 'Rejected' | 'Succeeded' | 'NotRun'
+export type AiStep = {
+  provider: string; status: AiStepStatus; model: string | null; latencyMs: number | null; inputTokens: number | null; outputTokens: number | null
+  costUsd: number | null; confidence: number | null; output: string | null; schemaValid: boolean | null; problem: string | null
+}
+export type DecisionRecord = {
+  decisionId: string; accountId: string; environment: string; epic: string; selectionVersion: number; snapshotId: string; snapshotAsOfUtc: string
+  startedUtc: string; recordedUtc: string; claude: AiStep; jev: AiStep; promptSha256: string | null; promptChars: number | null; promptStored: boolean
+  decision: string; noTradeReason: string | null; riskVeto: string | null; strategyId: string; strategyVersion: string; auditEventId: string
+}
+export type DecisionList = { total: number; items: DecisionRecord[] }
+export type DecisionFilter = { epic: string; decision: string; status: string }
+export type AiStatus = {
+  runtimeWired: boolean; note: string; allowedProviders: string[]; decisionsRecorded: number
+  providers: { name: string; registered: boolean; credentialPresent: boolean }[]
+}
 export type OperationsStatus = {
   checkedUtc: string; killSwitchEngaged: boolean; tradingMode: string; reconciliationComplete: boolean; suspensionReason: string | null
   feed: { epic: string; health: FeedHealth; lastQuoteUtc: string | null } | null

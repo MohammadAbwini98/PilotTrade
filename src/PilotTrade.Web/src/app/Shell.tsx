@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { MouseEvent } from 'react'
 import { Badge } from '../components/Badge'
-import { AiDecisionsPage, AuditPage, StrategyPage } from '../features/pending/PendingPages'
+import { AiDecisionsPage } from '../features/ai/AiDecisionsPage'
+import { AuditPage, StrategyPage } from '../features/pending/PendingPages'
 import { BrokerPage } from '../features/broker/BrokerPage'
 import { MarketsPage } from '../features/markets/MarketsPage'
 import { OrdersPage } from '../features/orders/OrdersPage'
@@ -19,7 +20,7 @@ function Page({ id, s }: { id: PageId; s: ConnectedSession }) {
   switch (id) {
     case 'overview': return <OverviewPage s={s} />
     case 'markets': return <MarketsPage s={s} />
-    case 'ai': return <AiDecisionsPage />
+    case 'ai': return <AiDecisionsPage s={s} />
     case 'risk': return <RiskPage s={s} />
     case 'orders': return <OrdersPage s={s} />
     case 'audit': return <AuditPage />

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, CredentialStatus, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
+  Account, AccountSummary, AiStatus, CredentialStatus, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
   Position, ProbeEvidence, Runtime, Selection, SnapshotResult, Watchlist, WorkingOrder,
 } from '../types/api'
 
@@ -52,6 +52,11 @@ export function useOwnerSession() {
   const [policy, setPolicy] = useState<MarketPolicy | null>(null)
   // Bumped on account change, disconnect and every monitor refresh, so only the newest monitor reply for the current account lands.
   const watchGeneration = useRef(0)
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
+  const [decisions, setDecisions] = useState<DecisionList | null>(null)
+  const [decision, setDecision] = useState<DecisionRecord | null>(null)
+  // Bumped on account change, disconnect and every decision read, so only the newest reply for the current account lands.
+  const decisionGeneration = useRef(0)
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
@@ -131,6 +136,8 @@ export function useOwnerSession() {
     watchGeneration.current++
     setWatchlist(null)
     setWatch(null)
+    decisionGeneration.current++
+    setAiStatus(null); setDecisions(null); setDecision(null)
     setAccountId(id)
     accountRef.current = id
     setSelection(null)
@@ -164,6 +171,8 @@ export function useOwnerSession() {
     generation.current++
     watchGeneration.current++
     setWatchlist(null); setWatch(null); setPolicy(null)
+    decisionGeneration.current++
+    setAiStatus(null); setDecisions(null); setDecision(null)
     ownerToken.current = ''
     accountRef.current = ''
     setStatus(null); setStatusFailed(false); setUpdateFailure(null)
@@ -262,6 +271,31 @@ export function useOwnerSession() {
   const addToWatchlist = (epic: string) => saveWatchlist([...(watchlist?.epics ?? []), epic])
   const removeFromWatchlist = (epic: string) => saveWatchlist((watchlist?.epics ?? []).filter(e => e !== epic))
 
+  // Read-only. The history lists what was recorded; this page never asks an AI provider anything.
+  const loadDecisions = (f: DecisionFilter) => guard(async () => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++decisionGeneration.current
+    const filter = [f.epic.trim() && `&epic=${q(f.epic.trim())}`, f.decision && `&decision=${q(f.decision)}`, f.status && `&status=${q(f.status)}`].join('')
+    const [st, list] = await Promise.all([
+      api.get<AiStatus>(`/api/ai/status?accountId=${q(id)}`),
+      api.get<DecisionList>(`/api/decisions?accountId=${q(id)}${filter}&limit=50`),
+    ])
+    if (current !== decisionGeneration.current || id !== accountRef.current) return
+    setAiStatus(st)
+    setDecisions(list)
+  })
+
+  const openDecision = (decisionId: string) => guard(async () => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++decisionGeneration.current
+    const d = await api.get<DecisionRecord>(`/api/decisions/${q(decisionId)}?accountId=${q(id)}`)
+    if (current === decisionGeneration.current && id === accountRef.current) setDecision(d)
+  })
+
+  const closeDecision = () => { decisionGeneration.current++; setDecision(null) }
+
   const checkNoOrders = () => guard(async () => {
     const current = generation.current
     const r = await api.get<NoOrderEvidence>(`/api/evidence/no-orders?accountId=${q(accountId)}`)
@@ -274,9 +308,9 @@ export function useOwnerSession() {
 
   return {
     runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
-    snapshot, evidence, noOrders, credentials, watchlist, watch, policy, busy: busy > 0, err,
+    snapshot, evidence, noOrders, credentials, watchlist, watch, policy, aiStatus, decisions, decision, busy: busy > 0, err,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
-    openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist,
+    openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist, loadDecisions, openDecision, closeDecision,
   }
 }
 
