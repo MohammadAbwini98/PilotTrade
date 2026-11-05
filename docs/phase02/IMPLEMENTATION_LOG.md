@@ -146,7 +146,7 @@ A connected screenshot needs the real backend and the owner token, and the token
 | `dotnet test PilotTrade.slnx` | unit 102/102; integration 236 passed, 3 skipped, 0 failed (239; 2 new) |
 | `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
 | `scripts/secret-scan.ps1` | no findings in 187 files |
-| CI | not run: the push needs the owner's approval |
+| CI on the 02-02 commit | Windows CI run 42075680649 on `76e7068`: success |
 
 New frontend tests:
 

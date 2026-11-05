@@ -5,7 +5,7 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
 | Task | Description | State | Evidence or reason |
 |---|---|---|---|
 | 02-01 | Owner control-center shell | **PARTIAL** | Code, local checks and Windows CI run 42061252141 on `56c5791` all pass. Still open: visual acceptance, which is BLOCKED and needs the owner. |
-| 02-02 | Overview dashboard | **PARTIAL** | Code and local checks pass (web 55/55, .NET 102 + 236/239). Adds read-only `GET /api/status`. Still open: CI, which needs push approval, and the owner's visual check. |
+| 02-02 | Overview dashboard | **PARTIAL** | Code and local checks pass (web 55/55, .NET 102 + 236/239). Adds read-only `GET /api/status`. Windows CI run 42075680649 on `76e7068` passes. Still open: the owner's visual check. |
 | 02-03 | Multi-instrument market monitor | NOT STARTED | There is no watchlist API yet. |
 | 02-04 | Claude/JEV observability | NOT STARTED | There is no decision-history API. The page shows "Not available". |
 | 02-05 | Risk Center / kill switch | NOT STARTED | The kill-switch state is shown read-only from `/api/status` (02-02). There is no button and no write API. |
