@@ -3,7 +3,7 @@ export type Runtime = { mode: string; environment: string; accountId: string; ex
 export type AccountSummary = { accountId: string; name: string | null; status: string | null; currency: string | null; preferred: boolean }
 export type InstrumentSummary = { epic: string; name: string; symbol: string | null; assetClass: number; status: number; bid: number | null; offer: number | null }
 export type InstrumentMetadata = {
-  epic: string; name: string; status: number; quoteCurrency: string; pricePrecision: number
+  epic: string; name: string; status: number; assetClass?: number; quoteCurrency: string; pricePrecision: number
   minDealSize: number; maxDealSize: number; dealSizeStep: number
   minStopDistance: number | null; maxStopDistance: number | null; minStopDistanceUnit: number; maxStopDistanceUnit: number
 }
@@ -16,7 +16,29 @@ export type Position = { positionId: string; epic: string; direction: number; si
 export type WorkingOrder = { orderId: string; epic: string; direction: number; type: number; size: number; level: number | null }
 export type SnapshotResult = {
   outcome: 'NO_TRADE' | 'SNAPSHOT_READY'; reason: string | null
-  snapshot: { epic: string; selectionVersion: number; asOfUtc: string; quote: { bid: number; ask: number; spread: number; sourceTimestampUtc: string } } | null
+  snapshot: {
+    epic: string; selectionVersion: number; asOfUtc: string; quote: { bid: number; ask: number; spread: number; sourceTimestampUtc: string }
+    candlesByTimeframe?: Record<string, Candle[]>
+  } | null
+}
+export type Candle = { openTimeUtc: string; closeTimeUtc: string; isClosed: boolean }
+// Task 02-03. The owner's watchlist, versioned so a second tab cannot silently overwrite it.
+export type Watchlist = { accountId: string; epics: string[]; version: number; updatedUtc: string | null; updatedBy: string | null }
+export type WatchQuote = { bid: number; ask: number; spreadPercent: number; sourceTimestampUtc: string; ageSeconds: number; health: FeedHealth }
+export type WatchDealing = {
+  pricePrecision: number; tickSize: number; minDealSize: number; maxDealSize: number; dealSizeStep: number
+  minStopDistance: number | null; maxStopDistance: number | null; minStopDistanceUnit: number; maxStopDistanceUnit: number
+  supportsMarketOrders: boolean; supportsLimitOrders: boolean; supportsStopOrders: boolean; tradingHours: string[]
+}
+// Asset class and market status arrive as names here. quoteChecksPassed is about the quote only; it is never a trade signal.
+export type WatchRow = {
+  epic: string; name: string | null; assetClass: string; marketStatus: string; quote: WatchQuote | null; maxSpreadPercent: number | null
+  dealing: WatchDealing | null; quoteChecksPassed: boolean; blockers: string[]
+}
+export type MarketWatch = { checkedUtc: string; maxQuoteAgeSeconds: number; watchlistVersion: number; rows: WatchRow[] }
+export type MarketPolicy = {
+  source: string; editable: boolean; maxQuoteAgeSeconds: number; minClosedCandles: number; maxCandleAgeInBars: number
+  maxSpreadPercent: Record<string, number>
 }
 export type NoOrderEvidence = {
   checkedUtc: string; adapter: string; executionEnabled: boolean; liveLocked: boolean; journalEntries: number

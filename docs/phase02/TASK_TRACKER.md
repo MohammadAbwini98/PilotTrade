@@ -6,7 +6,7 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
 |---|---|---|---|
 | 02-01 | Owner control-center shell | **PARTIAL** | Code, local checks and Windows CI run 42061252141 on `56c5791` all pass. Still open: visual acceptance, which is BLOCKED and needs the owner. |
 | 02-02 | Overview dashboard | **PARTIAL** | Code and local checks pass (web 55/55, .NET 102 + 236/239). Adds read-only `GET /api/status`. Windows CI run 42075680649 on `76e7068` passes. Still open: the owner's visual check. |
-| 02-03 | Multi-instrument market monitor | NOT STARTED | There is no watchlist API yet. |
+| 02-03 | Multi-instrument market monitor | **PARTIAL** | Code and local checks pass (web 63/63, .NET 120 + 246/249). Adds the `Watchlists` table (migration `AddWatchlists`) and the watchlist, monitor and policy APIs. Still open: Windows CI after a push, the owner's visual check and a real Demo check. |
 | 02-04 | Claude/JEV observability | NOT STARTED | There is no decision-history API. The page shows "Not available". |
 | 02-05 | Risk Center / kill switch | NOT STARTED | The kill-switch state is shown read-only from `/api/status` (02-02). There is no button and no write API. |
 | 02-06 | Orders / positions / reconciliation | NOT STARTED | The current read-only lists and no-order evidence were moved into the new page. |
@@ -24,6 +24,8 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
    - narrowing the window below 760 px moves the menu above the page.
 
    - the 02-02 overview shows provenance tags, the safety card and the warning list. After you stop the backend, the figures are marked stale within one poll.
+
+   - on the 02-03 Markets page, add instruments to the watchlist and refresh the monitor. A closed or stale market must show as Blocked.
 
    Any screenshot must not show the token field while it is filled in.
 

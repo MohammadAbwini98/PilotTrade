@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, CredentialStatus, InstrumentMetadata, InstrumentSummary, NoOrderEvidence, OperationsStatus, Position,
-  ProbeEvidence, Runtime, Selection, SnapshotResult, WorkingOrder,
+  Account, AccountSummary, CredentialStatus, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
+  Position, ProbeEvidence, Runtime, Selection, SnapshotResult, Watchlist, WorkingOrder,
 } from '../types/api'
 
 const q = encodeURIComponent
@@ -47,6 +47,11 @@ export function useOwnerSession() {
   const [err, setErr] = useState('')
   // Bumped on every account or instrument change, so a slow reply for the old choice cannot overwrite the new one.
   const generation = useRef(0)
+  const [watchlist, setWatchlist] = useState<Watchlist | null>(null)
+  const [watch, setWatch] = useState<MarketWatch | null>(null)
+  const [policy, setPolicy] = useState<MarketPolicy | null>(null)
+  // Bumped on account change, disconnect and every monitor refresh, so only the newest monitor reply for the current account lands.
+  const watchGeneration = useRef(0)
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
@@ -123,6 +128,9 @@ export function useOwnerSession() {
 
   const switchAccount = (id: string) => guard(async () => {
     clearInstrument()
+    watchGeneration.current++
+    setWatchlist(null)
+    setWatch(null)
     setAccountId(id)
     accountRef.current = id
     setSelection(null)
@@ -154,6 +162,8 @@ export function useOwnerSession() {
   // Forgets the token and everything loaded with it; replies still in flight are dropped.
   const disconnect = () => {
     generation.current++
+    watchGeneration.current++
+    setWatchlist(null); setWatch(null); setPolicy(null)
     ownerToken.current = ''
     accountRef.current = ''
     setStatus(null); setStatusFailed(false); setUpdateFailure(null)
@@ -208,6 +218,50 @@ export function useOwnerSession() {
     await reloadStatus(accountId)
   })
 
+  // The monitor only reads: metadata and one batched quote request per refresh. It never selects, signals or orders.
+  const loadWatch = async () => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++watchGeneration.current
+    const w = await api.get<MarketWatch>(`/api/market/watch?accountId=${q(id)}`)
+    if (current === watchGeneration.current && id === accountRef.current) setWatch(w)
+  }
+
+  const openMarkets = () => guard(async () => {
+    const id = accountRef.current
+    if (!id) return
+    const current = watchGeneration.current
+    const [p, list] = await Promise.all([policy ? Promise.resolve(policy) : api.get<MarketPolicy>('/api/market/policy'), api.get<Watchlist>(`/api/watchlist?accountId=${q(id)}`)])
+    if (current !== watchGeneration.current) return
+    setPolicy(p)
+    setWatchlist(list)
+    await loadWatch()
+  })
+
+  const refreshWatch = () => guard(loadWatch)
+
+  // Saved under the version this tab last saw. If another tab saved first, the server refuses and the newer list is shown instead.
+  const saveWatchlist = (epics: string[]) => guard(async () => {
+    const id = accountRef.current
+    if (!id || !watchlist) return
+    const current = watchGeneration.current
+    try {
+      const saved = await api.post<Watchlist>('/api/watchlist', { accountId: id, epics, expectedVersion: watchlist.version })
+      if (current !== watchGeneration.current) return
+      setWatchlist(saved)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && current === watchGeneration.current) {
+        setWatchlist((e.body as { current: Watchlist }).current)
+        throw new ApiError('The watchlist was changed in another tab. The current list is shown; nothing was saved.')
+      }
+      throw e
+    }
+    await loadWatch()
+  })
+
+  const addToWatchlist = (epic: string) => saveWatchlist([...(watchlist?.epics ?? []), epic])
+  const removeFromWatchlist = (epic: string) => saveWatchlist((watchlist?.epics ?? []).filter(e => e !== epic))
+
   const checkNoOrders = () => guard(async () => {
     const current = generation.current
     const r = await api.get<NoOrderEvidence>(`/api/evidence/no-orders?accountId=${q(accountId)}`)
@@ -220,8 +274,9 @@ export function useOwnerSession() {
 
   return {
     runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
-    snapshot, evidence, noOrders, credentials, busy: busy > 0, err,
+    snapshot, evidence, noOrders, credentials, watchlist, watch, policy, busy: busy > 0, err,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
+    openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist,
   }
 }
 

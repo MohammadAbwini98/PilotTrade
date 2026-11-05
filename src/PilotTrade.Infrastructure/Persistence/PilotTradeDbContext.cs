@@ -16,6 +16,7 @@ public class PilotTradeDbContext : DbContext
     public DbSet<JevEvaluationEntity> JevEvaluations => Set<JevEvaluationEntity>();
     public DbSet<ExecutionStateEntity> ExecutionStates => Set<ExecutionStateEntity>();
     public DbSet<OrderJournalEntity> OrderJournals => Set<OrderJournalEntity>();
+    public DbSet<WatchlistEntity> Watchlists => Set<WatchlistEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -29,5 +30,7 @@ public class PilotTradeDbContext : DbContext
         modelBuilder.Entity<JevEvaluationEntity>().HasKey(x => x.EvaluationId);
         modelBuilder.Entity<ExecutionStateEntity>().HasKey(x => x.Id);
         modelBuilder.Entity<OrderJournalEntity>().HasKey(x => x.CommandId);
+        modelBuilder.Entity<WatchlistEntity>().HasKey(x => x.Id);
+        modelBuilder.Entity<WatchlistEntity>().Property(x => x.Version).IsConcurrencyToken();
     }
 }

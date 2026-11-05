@@ -23,6 +23,12 @@ const noOrders = { checkedUtc: '2026-11-04T12:00:00Z', mode: 'Simulation', envir
 
 const opsStatus = { checkedUtc: '2026-11-04T12:00:00Z', killSwitchEngaged: false, tradingMode: 'MonitorOnly', reconciliationComplete: true, suspensionReason: null, feed: null }
 
+const emptyWatchlist = { accountId: 'ACC-A', epics: [], version: 0, updatedUtc: null, updatedBy: null }
+const marketPolicy = {
+  source: 'Built-in defaults', editable: false, maxQuoteAgeSeconds: 60, minClosedCandles: 21, maxCandleAgeInBars: 3,
+  maxSpreadPercent: { Fx: 0.05, CryptoCfd: 1, Commodity: 0.2, Index: 0.2, Share: 0.5, Etf: 0.5 },
+}
+
 let routes: Record<string, Route>
 let calls: Call[]
 
@@ -50,6 +56,9 @@ function defaults(): Record<string, Route> {
     'GET /api/evidence/no-orders': { status: 200, body: noOrders },
     'GET /api/status': { status: 200, body: opsStatus },
     'GET /api/demo/credential-status': { status: 200, body: { apiKeyPresent: true, identifierPresent: true, passwordPresent: false } },
+    'GET /api/watchlist': { status: 200, body: emptyWatchlist },
+    'GET /api/market/watch': { status: 200, body: { checkedUtc: new Date().toISOString(), maxQuoteAgeSeconds: 60, watchlistVersion: 0, rows: [] } },
+    'GET /api/market/policy': { status: 200, body: marketPolicy },
   }
 }
 
@@ -770,5 +779,204 @@ describe('overview polling', () => {
     const after = calls.length
     await pause(200)
     expect(calls.length).toBe(after)
+  })
+})
+
+describe('market monitor and watchlist', () => {
+  const iso = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString()
+  const dealing = (pricePrecision: number) => ({
+    pricePrecision, tickSize: 1 / 10 ** pricePrecision, minDealSize: 0.01, maxDealSize: 100, dealSizeStep: 0.01, minStopDistance: null, maxStopDistance: 10,
+    minStopDistanceUnit: 0, maxStopDistanceUnit: 0, supportsMarketOrders: true, supportsLimitOrders: true, supportsStopOrders: true, tradingHours: [],
+  })
+  const row = (epic: string, assetClass: string, bid: number, ask: number, precision: number, extra: Record<string, unknown> = {}) => ({
+    epic, name: `${epic} market`, assetClass, marketStatus: 'Open', maxSpreadPercent: (marketPolicy.maxSpreadPercent as Record<string, number>)[assetClass] ?? null,
+    quote: { bid, ask, spreadPercent: ((ask - bid) / ((ask + bid) / 2)) * 100, sourceTimestampUtc: iso(3), ageSeconds: 3, health: 'Healthy' },
+    dealing: dealing(precision), quoteChecksPassed: true, blockers: [], ...extra,
+  })
+  const listOf = (epics: string[], version: number) => ({ ...emptyWatchlist, epics, version })
+  const watchOf = (rows: unknown[], version: number, checkedSecondsAgo = 0) => ({ checkedUtc: iso(checkedSecondsAgo), maxQuoteAgeSeconds: 60, watchlistVersion: version, rows })
+  const cells = (epic: string) => within(screen.getByRole('row', { name: epic })).getAllByRole('cell').map(c => c.textContent)
+  const readiness = () => screen.getByLabelText('Decision readiness').textContent
+
+  async function openMarkets(rows: unknown[]) {
+    const epics = rows.map(r => (r as { epic: string }).epic)
+    routes['GET /api/watchlist'] = { status: 200, body: listOf(epics, 4) }
+    routes['GET /api/market/watch'] = { status: 200, body: watchOf(rows, 4) }
+    const user = await connect()
+    await goTo(user, 'Markets')
+    if (epics.length) await screen.findByRole('table', { name: 'Watched instruments' })
+    else await screen.findByText(/No instruments on the watchlist/)
+    return user
+  }
+
+  it('shows every asset class with its own precision and limit, and blocks closed, stale and incomplete rows', async () => {
+    await openMarkets([
+      row('EURUSD', 'Fx', 1.08, 1.08002, 5),
+      row('BTCUSD', 'CryptoCfd', 65000, 65300, 2),
+      row('US500', 'Index', 5800, 5800.5, 1, { marketStatus: 'Closed', quoteChecksPassed: false, blockers: ['Instrument not open: Closed'] }),
+      row('GOLD', 'Commodity', 2400, 2400.5, 2, { quote: { bid: 2400, ask: 2400.5, spreadPercent: 0.02, sourceTimestampUtc: iso(95), ageSeconds: 95, health: 'Stale' }, quoteChecksPassed: false, blockers: ['Stale quote'] }),
+      row('PENNY', 'Share', 0.001234, 0.001236, 6),
+      { epic: 'GONE', name: null, assetClass: 'Unknown', marketStatus: 'Unknown', quote: null, maxSpreadPercent: null, dealing: null, quoteChecksPassed: false, blockers: ['Instrument metadata missing', 'No quote'] },
+    ])
+    const eur = cells('EURUSD')
+    expect(eur.slice(1, 4)).toEqual(['FX', 'Open', '1.08000 / 1.08002'])
+    expect(eur[4]).toBe('0.0019% (max 0.05%)')
+    expect(eur[7]).toContain('Quote checks passed')
+    expect(cells('BTCUSD').slice(1, 5)).toEqual(['Crypto CFD', 'Open', '65000.00 / 65300.00', '0.4605% (max 1%)'])
+    expect(cells('US500')[3]).toBe('5800.0 / 5800.5')
+    expect(cells('US500')[7]).toBe('BlockedInstrument not open: Closed')
+    expect(cells('GOLD')[5]).toContain('(95 s)Stale')
+    expect(cells('GOLD')[7]).toBe('BlockedStale quote')
+    expect(cells('PENNY')[3]).toBe('0.001234 / 0.001236')
+    expect(cells('PENNY')[6]).toContain('6 decimals')
+    // Missing values stay Unknown; they are never zero or a guess.
+    expect(cells('GONE').slice(0, 7)).toEqual(['GONEname not provided', 'Unknown', 'Unknown', 'Unknown', 'Unknown (no limit)', 'Unknown', 'Unknown'])
+    expect(cells('GONE')[7]).toBe('BlockedInstrument metadata missingNo quote')
+    // The limits are shown with their source, and there is no trade or signal control.
+    expect(screen.getByText('Max spread, FX').nextElementSibling!.textContent).toBe('0.05% of mid')
+    expect(screen.getByText(/Source: Built-in defaults/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /buy|sell|order|trade|signal|execute/i })).toBeNull()
+  })
+
+  it('marks every row stale once the monitor data is older than the quote age limit', async () => {
+    routes['GET /api/watchlist'] = { status: 200, body: listOf(['EURUSD'], 1) }
+    routes['GET /api/market/watch'] = { status: 200, body: watchOf([row('EURUSD', 'Fx', 1.08, 1.08002, 5)], 1, 300) }
+    const user = await connect()
+    await goTo(user, 'Markets')
+    await screen.findByRole('table', { name: 'Watched instruments' })
+    expect(cells('EURUSD')[5]).toContain('Stale')
+    expect(cells('EURUSD')[7]).toMatch(/^BlockedMonitor data stale \(checked 30\d s ago\)$/)
+  })
+
+  it('adds and removes with the version it last saw, and shows the newer list after a conflict', async () => {
+    let stored = listOf(['GOLD'], 1)
+    routes['GET /api/watchlist'] = () => ({ status: 200, body: stored })
+    routes['GET /api/market/watch'] = () => ({ status: 200, body: watchOf(stored.epics.map(e => row(e, 'Fx', 1, 1.0001, 5)), stored.version) })
+    routes['POST /api/watchlist'] = (_url, init) => {
+      const { epics, expectedVersion } = JSON.parse(String(init.body)) as { epics: string[]; expectedVersion: number }
+      if (expectedVersion !== stored.version) return { status: 409, body: { error: 'WatchlistChanged', current: stored } }
+      stored = listOf(epics, stored.version + 1)
+      return { status: 200, body: stored }
+    }
+    const user = await connect()
+    await goTo(user, 'Markets')
+    await screen.findByRole('row', { name: 'GOLD' })
+    await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'a')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    expect((await screen.findByRole('button', { name: 'Add GOLD to watchlist' }) as HTMLButtonElement).disabled).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Add EURUSD to watchlist' }))
+    await screen.findByRole('row', { name: 'EURUSD' })
+    expect(posts().map(c => c.body)).toEqual([{ accountId: 'ACC-A', epics: ['GOLD', 'EURUSD'], expectedVersion: 1 }])
+    expect(screen.getByText(/list version 2/)).toBeTruthy()
+
+    // Another tab saves first: this tab's remove is refused and the newer list replaces what it showed.
+    stored = listOf(['GOLD', 'EURUSD', 'AAPL'], 3)
+    await user.click(screen.getByRole('button', { name: 'Remove GOLD from watchlist' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('The watchlist was changed in another tab. The current list is shown; nothing was saved.')
+    expect(screen.getByText(/3 of 10 watched, list version 3/)).toBeTruthy()
+    expect(stored.epics).toContain('GOLD')
+    // A conflict is an answer from the server, not a broken link.
+    expect(screen.queryByText(/Server error/)).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Refresh monitor' }))
+    await screen.findByRole('row', { name: 'AAPL' })
+    await user.click(screen.getByRole('button', { name: 'Remove GOLD from watchlist' }))
+    await waitFor(() => expect(screen.queryByRole('row', { name: 'GOLD' })).toBeNull())
+    expect(posts()[posts().length - 1].body).toEqual({ accountId: 'ACC-A', epics: ['EURUSD', 'AAPL'], expectedVersion: 3 })
+  })
+
+  it('shows the reason when the server refuses a list', async () => {
+    routes['POST /api/watchlist'] = { status: 400, body: { error: 'InvalidWatchlist', reason: 'Unknown instrument: EURUSD' } }
+    const user = await openMarkets([])
+    await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'a')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    await user.click(await screen.findByRole('button', { name: 'Add EURUSD to watchlist' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Unknown instrument: EURUSD')
+    expect(screen.getByText(/0 of 10 watched/)).toBeTruthy()
+  })
+
+  it('drops a slow monitor reply that a newer refresh has overtaken', async () => {
+    const slow = deferred<Reply>()
+    let n = 0
+    routes['GET /api/watchlist'] = { status: 200, body: listOf(['EURUSD'], 1) }
+    routes['GET /api/market/watch'] = () => {
+      n++
+      if (n === 2) return slow.promise
+      return { status: 200, body: watchOf([row('EURUSD', 'Fx', n === 1 ? 1.1 : 1.3, (n === 1 ? 1.1 : 1.3) + 0.00002, 5)], 1) }
+    }
+    const user = await connect()
+    await goTo(user, 'Markets')
+    await screen.findByRole('row', { name: 'EURUSD' })
+    await user.click(screen.getByRole('button', { name: 'Refresh monitor' }))
+    await waitFor(() => expect(n).toBe(2))
+    // The page's own button waits while busy, so the overtaking refresh comes from opening the page again.
+    await goTo(user, 'Overview')
+    await goTo(user, 'Markets')
+    await waitFor(() => expect(cells('EURUSD')[3]).toBe('1.30000 / 1.30002'))
+    slow.resolve({ status: 200, body: watchOf([row('EURUSD', 'Fx', 1.2, 1.20002, 5)], 1) })
+    await new Promise(r => setTimeout(r, 20))
+    expect(cells('EURUSD')[3]).toBe('1.30000 / 1.30002')
+  })
+
+  it('drops a monitor reply that arrives after disconnect', async () => {
+    const slow = deferred<Reply>()
+    routes['GET /api/watchlist'] = { status: 200, body: listOf(['EURUSD'], 1) }
+    routes['GET /api/market/watch'] = () => slow.promise
+    const user = await connect()
+    await goTo(user, 'Markets')
+    await waitFor(() => expect(calls.some(c => c.path === '/api/market/watch')).toBe(true))
+    await goTo(user, 'System')
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
+    slow.resolve({ status: 200, body: watchOf([row('EURUSD', 'Fx', 1.08, 1.08002, 5)], 1) })
+    await new Promise(r => setTimeout(r, 20))
+    routes['GET /api/market/watch'] = { status: 200, body: watchOf([], 1) }
+    cleanup()
+    window.history.replaceState(null, '', '/')
+    const again = await connect()
+    await goTo(again, 'Markets')
+    await screen.findByText(/Checked .* ago/)
+    expect(screen.queryByRole('row', { name: 'EURUSD' })).toBeNull()
+  })
+
+  it('shows a ready snapshot at the instrument precision with candle age and gaps, and clears it on a switch', async () => {
+    const asOf = new Date(Date.now() - 2000)
+    const at = (minutesBefore: number) => new Date(asOf.getTime() - minutesBefore * 60_000).toISOString()
+    // Five-minute candles with one missing bar between the second and third.
+    const candles = [[25, 20], [20, 15], [10, 5], [5, 0]].map(([open, close]) => ({ openTimeUtc: at(open), closeTimeUtc: at(close), isClosed: true }))
+    routes['POST /api/market/snapshot'] = { status: 200, body: { outcome: 'SNAPSHOT_READY', reason: null, snapshot: {
+      epic: 'EURUSD', selectionVersion: 2, asOfUtc: asOf.toISOString(), quote: { bid: 1.08, ask: 1.08002, spread: 0.00002, sourceTimestampUtc: asOf.toISOString() },
+      candlesByTimeframe: { '5m': candles },
+    } } }
+    const user = await connect()
+    await searchAndSelect(user, 'EURUSD')
+    await screen.findByText('EURUSD market')
+    expect(readiness()).toBe('Unknown: no snapshot built yet.')
+    await user.click(screen.getByRole('button', { name: 'Build market snapshot' }))
+    expect((await screen.findByText('Bid / ask')).nextElementSibling!.textContent).toBe('1.08000 / 1.08002')
+    expect(screen.getByText('5m candles').nextElementSibling!.textContent).toMatch(/^4 closed, newest closed \d\d:\d\d:\d\d UTC \(0\.0 bars old\); 1 gap$/)
+    expect(readiness()).toBe('Snapshot inputs passed. No AI decision has been made.')
+
+    // Switching instruments drops the snapshot for the previous one at once.
+    await user.click(screen.getByRole('button', { name: /\(GOLD\)/ }))
+    await screen.findByText('GOLD market')
+    expect(screen.queryByText('Bid / ask')).toBeNull()
+    expect(readiness()).toBe('Unknown: no snapshot built yet.')
+  })
+
+  it('blocks readiness for a closed market and names the limit behind a NO_TRADE', async () => {
+    routes['POST /api/instruments/select'] = (_url, init) => {
+      const { epic } = JSON.parse(String(init.body)) as { epic: string }
+      return { status: 200, body: { selection: { epic, selectionVersion: 2 }, instrument: { ...metadata(epic), assetClass: 1, status: epic === 'GOLD' ? 2 : 1 } } }
+    }
+    routes['POST /api/market/snapshot'] = { status: 200, body: { outcome: 'NO_TRADE', reason: 'Spread too wide', snapshot: null } }
+    const user = await connect()
+    await searchAndSelect(user, 'GOLD')
+    await screen.findByText('GOLD market')
+    expect(readiness()).toBe('Blocked: Market Closed')
+    await user.click(screen.getByRole('button', { name: /\(EURUSD\)/ }))
+    await screen.findByText('EURUSD market')
+    await user.click(screen.getByRole('button', { name: 'Build market snapshot' }))
+    expect((await screen.findByText(/NO_TRADE/)).textContent).toBe('NO_TRADE: Spread too wideLimit for FX: 0.05% of mid.')
+    expect(readiness()).toBe('Blocked: Spread too wide')
   })
 })

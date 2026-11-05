@@ -486,6 +486,39 @@ namespace PilotTrade.Infrastructure.Migrations
 
                     b.ToTable("OrderJournals");
                 });
+
+            modelBuilder.Entity("PilotTrade.Infrastructure.Persistence.WatchlistEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AccountId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("EpicsJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Watchlists");
+                });
 #pragma warning restore 612, 618
         }
     }

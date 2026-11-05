@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased (2026-11-05)
+- Phase 02, task 02-03: each account has a watchlist of up to 10 instruments, saved with a version and an audit event. A market monitor shows, for each instrument: class, market status, bid/ask, spread against the asset-class limit, quote age, dealing rules and readiness. Closed, stale or incomplete markets show as Blocked, and missing values as Unknown. For the selected instrument the page shows decision readiness, the limit behind a NO_TRADE, and candle age and gaps. New APIs: `GET/POST /api/watchlist`, `GET /api/market/watch` and `GET /api/market/policy`. New migration `AddWatchlists`; restart the API to apply it. No signals or orders.
 - Phase 02, task 02-02: the overview shows where each figure comes from (Reported, Derived or Unavailable), the server's kill-switch, trading-mode and reconciliation state, and feed health for the selected instrument. It also shows warnings for a lost backend, a stale feed, missing risk fields and Live locked. Polling runs every 15 s with backoff to 120 s, at most one update at a time, and data that is not fresh is marked stale. A new read-only `GET /api/status` serves this state.
 
 ## Unreleased (2026-11-04)

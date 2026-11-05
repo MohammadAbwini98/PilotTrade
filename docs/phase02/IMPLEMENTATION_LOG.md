@@ -159,3 +159,87 @@ New frontend tests:
 - interval, backoff to the limit and recovery;
 - single-flight Refresh;
 - polling stopping on disconnect.
+
+## 02-03: Multi-instrument market monitor and watchlists
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Domain/Market/Watchlist.cs` | `Watchlist` record, `WatchlistRules` (at most 10 epics, no duplicates, epics are case-sensitive and must be valid), `IWatchlistStore`, `WatchlistConflictException`. |
+| `src/PilotTrade.Infrastructure/Persistence/Entities.cs`, `PilotTradeDbContext.cs` | New `Watchlists` table entity. |
+| `src/PilotTrade.Infrastructure/Persistence/EfWatchlistStore.cs` | Stores one list per account and environment. A save must name the version it replaces. Otherwise it is refused and the current list is returned. Each save writes a `WatchlistUpdated` audit event (Category `Settings`) with the lists before and after. |
+| `src/PilotTrade.Infrastructure/Migrations/20261105174752_AddWatchlists*.cs`, `PilotTradeDbContextModelSnapshot.cs` | **Migration:** adds the table `Watchlists` (Id, AccountId, Environment, EpicsJson, Version, UpdatedUtc, UpdatedBy). It only adds; nothing existing changes. |
+| `src/PilotTrade.Application/Services/MarketWatchService.cs` | Builds one row per watched epic from the instrument metadata and a quote. Each row has: asset class, market status, bid/ask, spread as % of mid against the asset-class limit, source timestamp, age, feed health, dealing rules and blockers. Any of these blocks the row: a missing field, a broker error, a crossed or zero quote, a stale or future timestamp, a closed market, an unknown asset class. It never selects, signals or orders. |
+| `src/PilotTrade.Api/Program.cs` | **API change:**<br>• `GET /api/watchlist?accountId=`<br>• `POST /api/watchlist`: needs CSRF + Origin; the body has `accountId`, `epics` and `expectedVersion`. It returns 400 with `reason` for an invalid list or an unknown instrument, and 409 with `current` for a stale version.<br>• `GET /api/market/watch?accountId=`<br>• `GET /api/market/policy`<br>All four need the owner token. The ones that take `accountId` also need the configured account. |
+| `tests/PilotTrade.UnitTests/MarketWatchTests.cs` | 18 new unit tests:<br>• each asset class and its limit;<br>• the same spread blocks FX but passes for crypto;<br>• closed, stale, future-dated, unhealthy, crossed and zero quotes;<br>• missing metadata or quote, an unknown class, broker errors;<br>• precision 3 and 6;<br>• an empty list;<br>• the watchlist rules. |
+| `tests/PilotTrade.IntegrationTests/WatchlistTests.cs` | 10 new integration tests:<br>• the owner token, account binding and CSRF;<br>• a versioned, audited save, with a 409 for a stale version;<br>• invalid lists store nothing;<br>• the list survives a restart;<br>• watch rows: a closed market is blocked, and no selection or order is made;<br>• the simulator covers all five classes;<br>• the policy endpoint. |
+| `src/PilotTrade.Web/src/api/client.ts` | A 400 or 409 is an answer from a connected server. It throws `ApiError` with the server's reason and body, and does not mark the link as broken. |
+| `src/PilotTrade.Web/src/types/api.ts`, `lib/format.ts` | Watch types; asset-class labels; candle count, age and gaps; the limit text for each NO_TRADE reason. |
+| `src/PilotTrade.Web/src/hooks/useOwnerSession.ts` | Watchlist, monitor and policy state. A generation counter drops a monitor reply that a newer one has overtaken, or that arrives after an account switch or disconnect. A save sends the version it last saw. On a 409 the newer list replaces the one shown and nothing is saved. |
+| `src/PilotTrade.Web/src/features/markets/MarketsPage.tsx` | **Search results** show the asset class and a Watch button.<br>**Monitor table**, one row per instrument: class, market status, bid/ask, spread with its limit, quote time and age, dealing rules and readiness. Rows are marked stale when the backend link is lost, or when the last check is older than the quote age limit.<br>**Selected instrument panel:** decision readiness (Blocked, Passed or Unknown), the NO_TRADE reason with its limit, and the snapshot at the instrument's precision with candle age and gaps.<br>**Limits panel:** the built-in thresholds, marked not editable. |
+| `src/PilotTrade.Web/src/index.css` | table and wide panel styles |
+| `src/PilotTrade.Web/src/App.test.tsx` | 8 new tests (below) |
+| `src/PilotTrade.Api/wwwroot/*` | rebuilt assets `index-BKIdne1w.js` and `index-DUsF9pYJ.css`; the old ones are removed |
+
+No signal, AI decision or order control was added. Switching instruments still clears the previous snapshot at once, and the monitor does not change the selection.
+
+### Thresholds
+
+The limits come from `MarketDataPolicy`. They are labeled "Built-in defaults" and cannot be edited in this task; editing them belongs to 02-09.
+
+| Class | Max spread, % of mid |
+|---|---|
+| FX | 0.05 |
+| Crypto CFD | 1 |
+| Commodity | 0.2 |
+| Index | 0.2 |
+| Share | 0.5 |
+| ETF | 0.5 |
+
+- Any other class has no limit and is refused.
+- A quote older than 60 s is Stale, and a timestamp more than 60 s in the future is Unknown.
+- A snapshot needs 21 closed candles, and the newest may be at most 3 bars old.
+
+### Migration, restart, backup and rollback
+
+- The `AddWatchlists` migration runs at startup and only adds a table, so existing data is untouched. **Restart the API** after updating to apply it.
+- Back up first: stop the API, then run `scripts/backup-data.ps1`.
+- Rollback: stop the API, restore the backup taken before the update, and run the previous build. The previous build also runs on the new database, since it ignores the extra table, but it does not use watchlists saved since the update.
+
+### Limits
+
+- The monitor refreshes when the page opens and when the owner asks, not on a timer, to spare Capital.com. Each refresh reads metadata and a quote for each watched epic, so at most 10 of each.
+- Candle freshness and gaps are shown only in the selected instrument's snapshot. The monitor fetches no candles, so its rows have none.
+- Late replies are dropped by the generation counter, not cancelled with `AbortController`.
+- Not checked: a real Capital.com Demo run of the monitor across a market close and reopen, and the owner's visual check.
+
+### Results after 02-03
+
+| Check | Result |
+|---|---|
+| `npm test` | 63/63 passed (55 earlier + 8 new), stable over 3 runs |
+| `npm run lint` | clean |
+| `npm run build` | new `wwwroot` assets, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 120/120 (18 new); integration 246 passed, 3 skipped, 0 failed (249; 10 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
+| `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
+| `scripts/secret-scan.ps1` | no findings in 188 files |
+| CI on the 02-03 commit | not run yet: CI needs a push, and a push needs the owner's approval |
+
+New frontend tests:
+
+- Each asset class is shown with its own precision and limit:
+  - closed, stale and incomplete rows are blocked;
+  - missing values show as Unknown, never zero;
+  - the limits are shown with their source;
+  - there is no trade or signal control.
+- Every row is marked stale once the last check is older than the quote age limit.
+- Adding and removing send the version last seen. A conflict shows the newer list and does not mark the link broken.
+- A refused list shows the server's reason.
+- A slow monitor reply that a newer one has overtaken is dropped.
+- A monitor reply that arrives after disconnect is dropped.
+- A ready snapshot shows the instrument's precision and the candle age and gaps, and an instrument switch clears it.
+- A closed market blocks readiness, and a NO_TRADE names the limit behind it.
+
+Recommendation: **PARTIAL**. The code and all local checks pass. Still open: Windows CI, the owner's visual check and a real Demo check.

@@ -154,3 +154,13 @@ public class ExecutionStateEntity
     public string? SuspensionReason { get; set; }
     public DateTimeOffset UpdatedUtc { get; set; }
 }
+public class WatchlistEntity
+{
+    public string Id { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string EpicsJson { get; set; } = "[]";
+    public int Version { get; set; }
+    public DateTimeOffset UpdatedUtc { get; set; }
+    public string UpdatedBy { get; set; } = "";
+}

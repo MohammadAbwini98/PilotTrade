@@ -1,4 +1,7 @@
-export class ApiError extends Error {}
+// status and body are set when the server answered with a refusal the page can act on (400 or 409).
+export class ApiError extends Error {
+  constructor(message: string, readonly status?: number, readonly body?: unknown) { super(message) }
+}
 export class NotFound extends ApiError {}
 
 // A read is tried once more after a network failure; a write never is, so a POST cannot reach the server twice.
@@ -30,6 +33,12 @@ export function createApiClient(getToken: () => string, onLink: (state: LinkStat
     }
     if (r.status === 403) { onLink('refused'); throw new ApiError('Refused: check the owner token.') }
     if (r.status === 404) { onLink('connected'); throw new NotFound('Not found.') }
+    if (r.status === 400 || r.status === 409) {
+      // The server answered and refused the request itself; the link is fine.
+      onLink('connected')
+      const body = await r.json().catch(() => null) as { error?: string; reason?: string } | null
+      throw new ApiError(body?.reason ?? `Request refused (${r.status}${body?.error ? `: ${body.error}` : ''}).`, r.status, body)
+    }
     if (!r.ok) {
       onLink('server-error')
       const body = await r.json().catch(() => null) as { error?: string } | null

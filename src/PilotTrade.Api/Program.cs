@@ -63,7 +63,11 @@ builder.Services.AddSingleton<IInstrumentCatalog>(sp => new InstrumentCatalogSer
 builder.Services.AddSingleton<IInstrumentSelectionStore, EfInstrumentSelectionStore>();
 builder.Services.AddSingleton<IInstrumentSelectionService>(sp => new InstrumentSelectionService(
     sp.GetRequiredService<IClock>(), sp.GetRequiredService<IIdGenerator>(), sp.GetRequiredService<IInstrumentSelectionStore>()));
-builder.Services.AddSingleton<IMarketDataService>(sp => new MarketDataService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
+// One policy object, so the monitor shows exactly the limits the snapshot applies.
+builder.Services.AddSingleton(MarketDataPolicy.Default);
+builder.Services.AddSingleton<IMarketDataService>(sp => new MarketDataService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>(), sp.GetRequiredService<MarketDataPolicy>()));
+builder.Services.AddSingleton<IWatchlistStore, EfWatchlistStore>();
+builder.Services.AddSingleton(sp => new MarketWatchService(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>(), sp.GetRequiredService<MarketDataPolicy>()));
 builder.Services.AddSingleton<IRiskEngine, RiskEngine>();
 builder.Services.AddSingleton<IDecisionCoordinator, DecisionCoordinator>();
 builder.Services.AddSingleton<IPositionGuardian>(sp => new PositionGuardian(sp.GetRequiredService<IBrokerAdapter>(), sp.GetRequiredService<IClock>()));
@@ -192,6 +196,42 @@ guarded.MapPost("/market/snapshot", async (MarketSnapshotRequest req, IMarketDat
     }
 });
 
+// Task 02-03: watchlist and market monitor. Monitoring reads metadata and quotes only; it never selects, signals or orders.
+api.MapGet("/watchlist", (string accountId, BrokerRuntimeOptions options, IWatchlistStore store) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(store.Load(accountId, options.Environment)));
+
+guarded.MapPost("/watchlist", async (WatchlistSaveRequest req, BrokerRuntimeOptions options, IWatchlistStore store, IBrokerAdapter broker,
+    IClock clock, IIdGenerator ids, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, req.AccountId) is { } refused) return refused;
+    if (WatchlistRules.Problem(req.Epics) is { } problem) return Results.BadRequest(new { error = "InvalidWatchlist", reason = problem });
+    // Only instruments the broker knows for this account are stored.
+    foreach (var epic in req.Epics!)
+        if (await broker.GetInstrumentAsync(epic, req.AccountId, ct) is null)
+            return Results.BadRequest(new { error = "InvalidWatchlist", reason = $"Unknown instrument: {epic}" });
+    try { return Results.Ok(store.Save(req.AccountId, options.Environment, req.Epics!, req.ExpectedVersion, "owner", clock.UtcNow, ids.NewId("audit"))); }
+    catch (WatchlistConflictException ex) { return Results.Json(new { error = "WatchlistChanged", current = ex.Current }, statusCode: StatusCodes.Status409Conflict); }
+});
+
+api.MapGet("/market/watch", async (string accountId, BrokerRuntimeOptions options, IWatchlistStore store, MarketWatchService watch, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var list = store.Load(accountId, options.Environment);
+    var result = await watch.BuildAsync(accountId, list.Epics, ct);
+    return Results.Ok(new { result.CheckedUtc, result.MaxQuoteAgeSeconds, watchlistVersion = list.Version, result.Rows });
+});
+
+// The limits the snapshot applies. They are built-in defaults; editing them is task 02-09.
+api.MapGet("/market/policy", (MarketDataPolicy policy) => Results.Ok(new
+{
+    source = "Built-in defaults",
+    editable = false,
+    maxQuoteAgeSeconds = policy.MaxQuoteAge.TotalSeconds,
+    minClosedCandles = policy.MinClosedCandles,
+    maxCandleAgeInBars = policy.MaxCandleAgeInBars,
+    maxSpreadPercent = policy.MaxSpreadPercent.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+}));
+
 // Read-only Demo connection check. Returns sanitized evidence only.
 guarded.MapPost("/demo/test-connection", async (string? epic, BrokerAdapterFactory factory, BrokerRuntimeOptions options, IAuditLogger audit, IClock clock, IIdGenerator ids, CancellationToken ct) =>
 {
@@ -288,6 +328,7 @@ app.Run();
 
 public record MarketSnapshotRequest(string AccountId, string Epic, int SelectionVersion, string[]? Timeframes);
 public record InstrumentSelectRequest(string AccountId, string Epic);
+public record WatchlistSaveRequest(string AccountId, string[]? Epics, int ExpectedVersion);
 public record CredentialSetupRequest(string ApiKey, string ApiPassword, string Identifier, bool Replace = false);
 
 public partial class Program { }

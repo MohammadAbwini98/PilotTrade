@@ -122,3 +122,14 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .banner-neutral { border-left-color: var(--muted); }
 .prov { margin-left: 0.5rem; font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 0.3rem; }
 .prov-unavailable { color: var(--warn); }
+
+/* Task 02-03: market monitor */
+.wide { grid-column: 1 / -1; }
+.table-wrap { overflow-x: auto; }
+.watch { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.watch th, .watch td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.watch th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.watch ul { margin: 4px 0 0; padding-left: 16px; }
+.results li { display: flex; gap: 8px; align-items: center; }
+.results li > button:first-child { flex: 1; }
+.results li > button + button { width: auto; flex: none; border-color: var(--border); }

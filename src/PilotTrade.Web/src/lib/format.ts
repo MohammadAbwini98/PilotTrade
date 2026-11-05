@@ -63,3 +63,52 @@ export const tradingModeLabel = (mode: string) => TRADING_MODE[mode] ?? { text: 
 export const FEED_TONE: Record<string, Tone> = { Healthy: 'ok', Stale: 'warn', Disconnected: 'danger', Unknown: 'neutral' }
 
 export const utcIso = (iso: string | null | undefined) => (iso ? utcTime(new Date(iso)) : 'never')
+
+// Task 02-03. Asset classes and market states as the monitor sends them (names), and as the metadata sends them (numbers).
+export const ASSET_CLASS = ['Unknown', 'Fx', 'CryptoCfd', 'Commodity', 'Index', 'Share', 'Etf', 'Other']
+export const ASSET_LABEL: Record<string, string> = {
+  Unknown: 'Unknown', Fx: 'FX', CryptoCfd: 'Crypto CFD', Commodity: 'Commodity', Index: 'Index', Share: 'Share', Etf: 'ETF', Other: 'Other',
+}
+export const assetLabel = (name: string | undefined) => (name ? ASSET_LABEL[name] ?? `Unknown (${name})` : 'Unknown')
+export const MARKET_STATE_LABEL: Record<string, string> = {
+  Unknown: 'Unknown', Open: 'Open', Closed: 'Closed', PreMarket: 'Pre-market', PostMarket: 'Post-market', Halted: 'Halted', Maintenance: 'Maintenance',
+}
+
+// Length of one bar for a timeframe such as 5m, 1h or 1d; null when the timeframe is not understood.
+export function barMs(timeframe: string): number | null {
+  const m = /^(\d+)([mhd])$/.exec(timeframe)
+  if (!m) return null
+  return Number(m[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 'm' | 'h' | 'd']
+}
+
+// Age of the newest closed candle at the snapshot time, in bars, and how many times consecutive candles are more than one bar apart.
+export function candleStats(candles: { openTimeUtc: string; closeTimeUtc: string; isClosed: boolean }[], timeframe: string, asOfUtc: string) {
+  const bar = barMs(timeframe)
+  const closed = candles.filter(c => c.isClosed)
+  const last = closed.length ? closed[closed.length - 1] : null
+  const ageBars = bar && last ? (Date.parse(asOfUtc) - Date.parse(last.closeTimeUtc)) / bar : null
+  let gaps: number | null = null
+  if (bar) {
+    gaps = 0
+    for (let i = 1; i < candles.length; i++) if (Date.parse(candles[i].openTimeUtc) - Date.parse(candles[i - 1].openTimeUtc) > bar) gaps++
+  }
+  return { count: closed.length, lastCloseUtc: last?.closeTimeUtc ?? null, ageBars, gaps }
+}
+
+type Limits = { maxQuoteAgeSeconds: number; minClosedCandles: number; maxCandleAgeInBars: number; maxSpreadPercent: Record<string, number> }
+
+// The limit behind a NO_TRADE reason, so the owner sees why the snapshot was refused. Null when no limit applies.
+export function limitFor(reason: string, assetClass: string | undefined, limits: Limits | null): string | null {
+  if (reason.startsWith('Instrument not open')) return 'The market must be Open.'
+  if (reason === 'Selection changed: request outdated') return 'The instrument changed after the request was sent.'
+  if (reason === 'Spread limit unknown') return 'No spread limit is set for this asset class, so it is refused.'
+  if (!limits) return null
+  if (reason === 'Spread too wide') {
+    const max = assetClass ? limits.maxSpreadPercent[assetClass] : undefined
+    return max === undefined ? null : `Limit for ${assetLabel(assetClass)}: ${max}% of mid.`
+  }
+  if (reason === 'Stale quote') return `Quotes older than ${limits.maxQuoteAgeSeconds} s are refused.`
+  if (/candles stale$/.test(reason)) return `The newest closed candle may be at most ${limits.maxCandleAgeInBars} bars old.`
+  if (/candle history insufficient$/.test(reason)) return `At least ${limits.minClosedCandles} closed candles are needed.`
+  return null
+}
