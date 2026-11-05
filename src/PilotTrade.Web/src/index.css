@@ -112,3 +112,13 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   .sidebar ul { flex-direction: row; flex-wrap: wrap; }
   .sidebar a[aria-current='page'] { box-shadow: inset 0 -3px 0 var(--ok); }
 }
+
+/* 02-02: operational warnings and figure provenance */
+.banners { list-style: none; margin: 0 0 1rem; padding: 0; display: grid; gap: 0.5rem; }
+.banner { border: 1px solid var(--border); border-left-width: 6px; border-radius: 6px; padding: 0.5rem 0.75rem; background: var(--surface); }
+.banner-danger { border-left-color: var(--error); font-weight: 700; }
+.banner-warn { border-left-color: var(--warn); }
+.banner-ok { border-left-color: var(--ok); }
+.banner-neutral { border-left-color: var(--muted); }
+.prov { margin-left: 0.5rem; font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 0.3rem; }
+.prov-unavailable { color: var(--warn); }

@@ -14,7 +14,11 @@ export function RiskPage({ s }: { s: ConnectedSession }) {
         </dl>
         <p className="muted">Reported by the server. This page has no control that enables orders or Live trading.</p>
       </section>
-      <Unavailable title="Kill switch">The backend has no kill-switch API yet; it arrives with task 02-05.</Unavailable>
+      <section className="panel" aria-labelledby="rk-kill">
+        <h2 id="rk-kill">Kill switch</h2>
+        <p>State: {s.status ? (s.status.killSwitchEngaged ? <span className="tone-danger">Engaged</span> : 'Not engaged') : 'Not available'}</p>
+        <p className="muted">Read-only. Engaging it from the browser is not available yet (task 02-05).</p>
+      </section>
       <Unavailable title="Risk limits">Risk limits cannot be read or edited from the browser yet (task 02-09).</Unavailable>
     </div>
   )

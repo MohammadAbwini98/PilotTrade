@@ -1,12 +1,19 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, CredentialStatus, InstrumentMetadata, InstrumentSummary, NoOrderEvidence, Position,
+  Account, AccountSummary, CredentialStatus, InstrumentMetadata, InstrumentSummary, NoOrderEvidence, OperationsStatus, Position,
   ProbeEvidence, Runtime, Selection, SnapshotResult, WorkingOrder,
 } from '../types/api'
 
 const q = encodeURIComponent
+
+// The overview refreshes itself on this interval. After a failed update the wait doubles, up to the maximum, and returns to normal after a success.
+// Tests shorten these; the app never changes them.
+export const POLL = { baseMs: 15_000, maxMs: 120_000 }
+
+// A failed background update: the figures on screen are kept, but marked stale from this moment.
+export type UpdateFailure = { at: Date; message: string }
 
 // Everything the owner's browser tab knows, and every action it can take. All of it comes from the backend.
 export function useOwnerSession() {
@@ -22,6 +29,12 @@ export function useOwnerSession() {
   const [positions, setPositions] = useState<Position[]>([])
   const [orders, setOrders] = useState<WorkingOrder[]>([])
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [status, setStatus] = useState<OperationsStatus | null>(null)
+  const [statusFailed, setStatusFailed] = useState(false)
+  const [updateFailure, setUpdateFailure] = useState<UpdateFailure | null>(null)
+  // One update at a time: a timer tick or a Refresh click that arrives during an update joins it instead of starting another.
+  const inFlight = useRef<Promise<ApiError | null> | null>(null)
+  const accountRef = useRef('')
   const [instruments, setInstruments] = useState<InstrumentSummary[]>([])
   const [searched, setSearched] = useState(false)
   const [selection, setSelection] = useState<Selection | null>(null)
@@ -50,16 +63,49 @@ export function useOwnerSession() {
 
   const loadAccount = async (id: string) => {
     const current = generation.current
-    const [a, p, o] = await Promise.all([
+    // The status read failing must not hide account figures that did arrive; it is shown as unavailable instead.
+    const statusRead = api.get<OperationsStatus>(`/api/status?accountId=${q(id)}`).then(r => r, () => null)
+    const [a, p, o, st] = await Promise.all([
       api.get<Account>(`/api/account?accountId=${q(id)}`),
       api.get<Position[]>(`/api/positions?accountId=${q(id)}`),
       api.get<WorkingOrder[]>(`/api/orders?accountId=${q(id)}`),
+      statusRead,
     ])
     if (current !== generation.current) return
     setAccount(a)
     setPositions(p)
     setOrders(o)
+    setStatus(st)
+    setStatusFailed(st === null)
+    setUpdateFailure(null)
     setLastRefresh(new Date())
+  }
+
+  // Feed health changes when a snapshot is built or the selection moves, so it is read again then.
+  const reloadStatus = async (id: string) => {
+    const current = generation.current
+    const st = await api.get<OperationsStatus>(`/api/status?accountId=${q(id)}`).then(r => r, () => null)
+    if (current !== generation.current) return
+    setStatus(st)
+    setStatusFailed(st === null)
+  }
+
+  // Shared by the timer and the Refresh button. A failure keeps the last figures and marks them stale.
+  const update = (): Promise<ApiError | null> => {
+    if (inFlight.current) return inFlight.current
+    const id = accountRef.current
+    if (!id) return Promise.resolve(null)
+    const run = (async () => {
+      try { await loadAccount(id); return null }
+      catch (e) {
+        const error = e instanceof ApiError ? e : new ApiError('The request could not be completed.')
+        setUpdateFailure({ at: new Date(), message: error.message })
+        return error
+      }
+      finally { inFlight.current = null }
+    })()
+    inFlight.current = run
+    return run
   }
 
   // The backend keeps the owner's choice across restarts under a new, higher version; the instrument is checked afresh before it is shown.
@@ -78,13 +124,17 @@ export function useOwnerSession() {
   const switchAccount = (id: string) => guard(async () => {
     clearInstrument()
     setAccountId(id)
+    accountRef.current = id
     setSelection(null)
     setAccount(null)
     setPositions([])
     setOrders([])
     setNoOrders(null)
+    setStatus(null)
+    setUpdateFailure(null)
     await loadAccount(id)
     await restoreSelection(id)
+    await reloadStatus(id)
   })
 
   const connect = (token: string) => {
@@ -105,12 +155,33 @@ export function useOwnerSession() {
   const disconnect = () => {
     generation.current++
     ownerToken.current = ''
+    accountRef.current = ''
+    setStatus(null); setStatusFailed(false); setUpdateFailure(null)
     setRuntime(null); setAccounts([]); setAccountId(''); setAccount(null); setPositions([]); setOrders([])
     setInstruments([]); setSearched(false); setSelection(null); setInstrument(null); setSnapshot(null)
     setEvidence(null); setNoOrders(null); setCredentials(null); setLastRefresh(null); setLink('unknown'); setErr('')
   }
 
-  const refreshAccount = () => guard(() => loadAccount(accountId))
+  const refreshAccount = () => guard(async () => { const error = await update(); if (error) throw error })
+
+  // Polling runs while an account is open. The timer is cleared on disconnect, on account change and on unmount,
+  // and a reply that arrives after that is dropped by the generation check.
+  useEffect(() => {
+    if (!accountId) return
+    let delay = POLL.baseMs
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = async () => {
+      const error = await update()
+      if (stopped) return
+      delay = error ? Math.min(delay * 2, POLL.maxMs) : POLL.baseMs
+      timer = setTimeout(() => void tick(), delay)
+    }
+    timer = setTimeout(() => void tick(), delay)
+    return () => { stopped = true; clearTimeout(timer) }
+    // update reads the account from a ref, so the timer only restarts when the account changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId])
 
   const search = (text: string) => guard(async () => {
     setInstruments(await api.get<InstrumentSummary[]>(`/api/instruments/search?q=${q(text)}&limit=50`))
@@ -125,13 +196,16 @@ export function useOwnerSession() {
     if (current !== generation.current) return
     setSelection(r.selection)
     setInstrument(r.instrument)
+    await reloadStatus(accountId)
   })
 
   const buildSnapshot = () => guard(async () => {
     if (!selection) return
     const current = generation.current
     const r = await api.post<SnapshotResult>('/api/market/snapshot', { accountId, epic: selection.epic, selectionVersion: selection.selectionVersion, timeframes: ['5m', '1h'] })
-    if (current === generation.current) setSnapshot(r)
+    if (current !== generation.current) return
+    setSnapshot(r)
+    await reloadStatus(accountId)
   })
 
   const checkNoOrders = () => guard(async () => {
@@ -145,7 +219,7 @@ export function useOwnerSession() {
   const loadCredentialStatus = () => guard(async () => setCredentials(await api.get<CredentialStatus>('/api/demo/credential-status')))
 
   return {
-    runtime, accounts, accountId, account, positions, orders, lastRefresh, link, instruments, searched, selection, instrument,
+    runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
     snapshot, evidence, noOrders, credentials, busy: busy > 0, err,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
   }

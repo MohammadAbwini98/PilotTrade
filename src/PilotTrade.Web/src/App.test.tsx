@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
+import { POLL } from './hooks/useOwnerSession'
 import { palette } from './theme'
 
 // A fake PilotTrade backend. Every request is recorded, so a test can prove what the page did and did not send.
@@ -19,6 +20,8 @@ const metadata = (epic: string) => ({
   minDealSize: 1, maxDealSize: 100, dealSizeStep: 1, minStopDistance: null, maxStopDistance: 50, minStopDistanceUnit: 0, maxStopDistanceUnit: 0,
 })
 const noOrders = { checkedUtc: '2026-11-04T12:00:00Z', mode: 'Simulation', environment: 'Demo', accountId: 'ACC-A', adapter: 'simulated', executionEnabled: false, liveLocked: true, journalEntries: 0, journalEntriesSentToBroker: 0, journalStates: {}, orderIntents: 0, brokerWriteRequestsSinceStart: null, noOrderSent: true }
+
+const opsStatus = { checkedUtc: '2026-11-04T12:00:00Z', killSwitchEngaged: false, tradingMode: 'MonitorOnly', reconciliationComplete: true, suspensionReason: null, feed: null }
 
 let routes: Record<string, Route>
 let calls: Call[]
@@ -45,6 +48,7 @@ function defaults(): Record<string, Route> {
     },
     'POST /api/market/snapshot': { status: 200, body: { outcome: 'NO_TRADE', reason: 'Market closed', snapshot: null } },
     'GET /api/evidence/no-orders': { status: 200, body: noOrders },
+    'GET /api/status': { status: 200, body: opsStatus },
     'GET /api/demo/credential-status': { status: 200, body: { apiKeyPresent: true, identifierPresent: true, passwordPresent: false } },
   }
 }
@@ -546,7 +550,8 @@ describe('control center shell', () => {
       expect(document.querySelector('main')!.textContent).not.toMatch(/\d+\.\d{2}/)
     }
     await goTo(user, 'Risk Center')
-    expect(screen.getByRole('heading', { level: 2, name: 'Kill switch: Not available' })).toBeTruthy()
+    // The kill switch is shown as the server reports it, read-only; engaging it arrives with task 02-05.
+    expect(screen.getByRole('heading', { level: 2, name: 'Kill switch' }).parentElement!.textContent).toContain('State: Not engaged')
     expect(screen.queryByRole('button', { name: /kill|enable|live|unlock/i })).toBeNull()
   })
 
@@ -572,7 +577,7 @@ describe('control center shell', () => {
     expect(header.getByText('Connected')).toBeTruthy()
     expect(header.getByText(/^\d{2}:\d{2}:\d{2} UTC$/)).toBeTruthy()
     // A wrong or rotated token is refused on every call, not just one.
-    for (const path of ['/api/account', '/api/positions', '/api/orders']) routes[`GET ${path}`] = { status: 403 }
+    for (const path of ['/api/account', '/api/positions', '/api/orders', '/api/status']) routes[`GET ${path}`] = { status: 403 }
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     expect((await screen.findByRole('alert')).textContent).toBe('Refused: check the owner token.')
     expect(header.getByText('Refused')).toBeTruthy()
@@ -631,5 +636,139 @@ describe('control center shell', () => {
       for (const fg of [palette.text, palette.muted, palette.error, palette.warn, palette.ok]) expect(ratio(fg, bg)).toBeGreaterThanOrEqual(4.5)
       expect(ratio(palette.focus, bg)).toBeGreaterThanOrEqual(3)
     }
+  })
+})
+
+describe('operations overview', () => {
+  const warnings = () => within(screen.getByRole('list', { name: 'Operational warnings' })).queryAllByRole('listitem').map(li => li.textContent)
+  const tag = (label: string) => screen.getByText(label).querySelector('.prov')!.textContent
+  const value = (label: string) => screen.getByText(label).nextElementSibling!.textContent
+
+  it('labels each figure Reported, Derived or Unavailable exactly as the backend sent it', async () => {
+    routes['GET /api/account'] = { status: 200, body: { ...account, equity: 1012.5, equityIsDerived: true, freeMargin: null, realizedPnLToday: 0 } }
+    await connect()
+    expect([tag('Balance'), value('Balance')]).toEqual(['Reported', '1000.00 USD'])
+    expect([tag('Equity'), value('Equity')]).toEqual(['Derived', '1012.50'])
+    expect([tag('Free margin'), value('Free margin')]).toEqual(['Unavailable', 'not provided'])
+    expect([tag('Realized P&L today'), value('Realized P&L today')]).toEqual(['Reported', '0.00'])
+    expect(warnings()).toContain('Not reported by the broker, so risk checks cannot use them: Free margin.')
+  })
+
+  it('shows empty holdings as reported zeros, not as missing', async () => {
+    await connect()
+    expect(value('Open positions')).toBe('0')
+    expect(value('Working orders')).toBe('0')
+  })
+
+  it('shows the server safety status: kill switch, trading mode, reconciliation and Live locked', async () => {
+    routes['GET /api/status'] = { status: 200, body: { ...opsStatus, killSwitchEngaged: true, tradingMode: 'Suspended', reconciliationComplete: false, suspensionReason: 'Broker holdings are not compared while execution is disabled' } }
+    await connect()
+    expect(value('Kill switch')).toBe('Engaged')
+    expect(value('Server trading mode')).toBe('Suspended')
+    expect(value('Reconciliation')).toBe('Not complete')
+    expect(warnings()).toEqual([
+      'Kill switch engaged: the server refuses every new order.',
+      'Reconciliation not complete: Broker holdings are not compared while execution is disabled.',
+      'Live trading is locked. There is no control to unlock it.',
+    ])
+    expect(screen.queryByRole('button', { name: /kill|release|unlock|enable|live/i })).toBeNull()
+  })
+
+  it('warns about a stale market feed with its last quote time', async () => {
+    routes['GET /api/instruments/selection'] = { status: 200, body: { epic: 'EURUSD', selectionVersion: 2 } }
+    routes['GET /api/instruments/{epic}'] = { status: 200, body: metadata('EURUSD') }
+    routes['GET /api/status'] = { status: 200, body: { ...opsStatus, feed: { epic: 'EURUSD', health: 'Stale', lastQuoteUtc: '2026-11-04T11:58:07Z' } } }
+    await connect()
+    await waitFor(() => expect(warnings()).toContain('Market feed for EURUSD is stale (last quote 11:58:07 UTC).'))
+    expect(value('Feed health')).toBe('Stale')
+    expect(value('Last quote')).toBe('11:58:07 UTC')
+  })
+
+  it('keeps the figures but marks them stale when the backend is lost, and clears it once it is back', async () => {
+    const healthy = { status: 200, body: { ...opsStatus, feed: { epic: 'EURUSD', health: 'Healthy', lastQuoteUtc: '2026-11-04T11:59:59Z' } } }
+    routes['GET /api/instruments/selection'] = { status: 200, body: { epic: 'EURUSD', selectionVersion: 2 } }
+    routes['GET /api/instruments/{epic}'] = { status: 200, body: metadata('EURUSD') }
+    routes['GET /api/status'] = healthy
+    const user = await connect()
+    await waitFor(() => expect(screen.getByText('Feed health').nextElementSibling!.className).toBe('tone-ok'))
+    const updated = within(screen.getByRole('banner')).getByText('Last refresh').nextElementSibling!.textContent!
+    const reads = ['GET /api/account', 'GET /api/positions', 'GET /api/orders', 'GET /api/status']
+    for (const key of reads) routes[key] = { status: 503 }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await screen.findByRole('alert')
+    expect(warnings()[0]).toBe(`Backend server error: the figures below are stale (last successful update ${updated}).`)
+    expect(value('Balance')).toBe('1000.00 USD')
+    expect(screen.getAllByText(`Stale: as of ${updated}`)).toHaveLength(2)
+    // A green state never survives a lost link.
+    expect(screen.getByText('Feed health').nextElementSibling!.className).toBe('tone-warn')
+    expect(value('Feed health')).toBe('Healthy (stale)')
+
+    for (const key of reads) routes[key] = defaults()[key]
+    routes['GET /api/status'] = healthy
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(warnings()).toEqual(['Live trading is locked. There is no control to unlock it.']))
+    expect(screen.queryByText(/^Stale:/)).toBeNull()
+  })
+
+  it('still shows account figures when only the status read fails, and says what is unknown', async () => {
+    routes['GET /api/status'] = { status: 500, body: { error: 'internal_error' } }
+    await connect()
+    expect(value('Balance')).toBe('1000.00 USD')
+    expect(value('Kill switch')).toBe('Not available')
+    expect(value('Reconciliation')).toBe('Not available')
+    expect(warnings()).toContain('Server safety status could not be read: kill switch, reconciliation and feed health are unknown.')
+  })
+})
+
+describe('overview polling', () => {
+  // The real interval is 15 s; these tests run it at a few milliseconds with real timers.
+  const saved = { ...POLL }
+  beforeEach(() => { POLL.baseMs = 30; POLL.maxMs = 120 })
+  afterEach(() => { Object.assign(POLL, saved); vi.restoreAllMocks() })
+  const accountReads = () => calls.filter(c => c.path === '/api/account').length
+  const pause = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+  it('updates on the interval, backs off after failures up to the limit, and recovers', async () => {
+    const timer = vi.spyOn(globalThis, 'setTimeout')
+    await connect()
+    const start = accountReads()
+    await waitFor(() => expect(accountReads()).toBeGreaterThan(start))
+    const delays = () => timer.mock.calls.map(c => c[1]).filter(d => d === 30 || d === 60 || d === 120)
+
+    routes['GET /api/account'] = { status: 503 }
+    await waitFor(() => expect(delays()).toContain(60))
+    await waitFor(() => expect(delays().filter(d => d === 120).length).toBeGreaterThanOrEqual(2))
+    // The delay never grows past the limit: nothing above 120 ms is scheduled after 120 ms.
+    expect(delays().slice(delays().indexOf(120)).every(d => d === 120)).toBe(true)
+    // A failed background update shows as a stale warning, not as an error alert.
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(within(screen.getByRole('list', { name: 'Operational warnings' })).getAllByRole('listitem')[0].textContent).toMatch(/^Update failed at \d\d:\d\d:\d\d UTC: the figures below are stale/)
+
+    routes['GET /api/account'] = defaults()['GET /api/account']
+    const before = delays().length
+    await waitFor(() => expect(delays().slice(before)).toContain(30))
+  })
+
+  it('never runs two updates at once: Refresh during a timer update joins it', async () => {
+    const user = await connect()
+    const slow = deferred<Reply>()
+    routes['GET /api/account'] = () => slow.promise
+    const start = accountReads()
+    await waitFor(() => expect(accountReads()).toBe(start + 1))
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await pause(100)
+    expect(accountReads()).toBe(start + 1)
+    slow.resolve({ status: 200, body: { ...account, balance: 1234 } })
+    await waitFor(() => expect(screen.getByText('Balance').nextElementSibling!.textContent).toBe('1234.00 USD'))
+  })
+
+  it('stops polling on disconnect', async () => {
+    const user = await connect()
+    await goTo(user, 'System')
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
+    const after = calls.length
+    await pause(200)
+    expect(calls.length).toBe(after)
   })
 })

@@ -110,3 +110,52 @@ The new tests cover:
 ### Visual acceptance: BLOCKED
 
 A connected screenshot needs the real backend and the owner token, and the token must not be typed by Claude or captured. The owner can run this check against the running app. It is recorded in TASK_TRACKER.md.
+
+## 02-02: Operations overview
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Api/Program.cs` | **API change:** new read-only `GET /api/status?accountId=`, which needs the owner token and the configured account. It returns `checkedUtc`, `killSwitchEngaged`, `tradingMode`, `reconciliationComplete`, `suspensionReason`, and `feed` (`epic`, `health`, `lastQuoteUtc`) for the selected instrument, or `null` when no instrument is selected. It reads `ITradingControl.State`, the selection and the market-data service. It changes nothing. |
+| `tests/PilotTrade.IntegrationTests/OperationsStatusTests.cs` | 2 tests: the owner token and account binding are enforced; the server state is reported before and after a selection, a snapshot and a kill-switch engage, and no broker order request is made. |
+| `src/types/api.ts` | `OperationsStatus`, `FeedHealth` |
+| `src/lib/format.ts` | `provenance()` gives Reported, Derived or Unavailable, and a `null` value is never turned into zero. Also the server trading-mode labels, the feed tones and `utcIso`. |
+| `src/hooks/useOwnerSession.ts` | Loads the status with the account. The update is single-flight: a Refresh during a timer update joins it. Polling runs every 15 s, doubles to at most 120 s after a failure, and returns to 15 s after a success. It stops on disconnect or an account change. A failed update records `updateFailure` and keeps the last figures. |
+| `src/features/overview/OverviewPage.tsx` | A provenance tag on each figure. A safety card shows the kill switch, server trading mode, reconciliation and the server time. The feed health and last quote are shown for the selected instrument. Warnings cover: backend lost or update failed (with the last successful time), stale or disconnected feed, risk fields the broker did not report, kill switch engaged, reconciliation not complete, status unreadable, and Live locked. When the data is stale, a green feed state is shown as `(stale)` with a warning tone. |
+| `src/features/risk/RiskPage.tsx` | The kill-switch state is now read from `/api/status`, read-only. Engaging it stays in 02-05. |
+| `src/index.css` | banner and provenance styles |
+| `src/App.test.tsx` | 9 new tests; one existing Risk test is updated |
+
+`simulation.executionEnabled` is still not shown as broker permission. The Demo orders and Live labels come from `/api/runtime` as before. The overview adds no control that changes trading state.
+
+### Limits
+
+- Feed health changes only when a snapshot is built (`POST /api/market/snapshot`). The overview does not request quotes itself, so an untouched instrument reads `Unknown` with a hint to build a snapshot. Polling the broker for quotes would add load on Capital.com, so it is not done here; it belongs to 02-03.
+- Cancellation works by the generation counter, which drops late replies, and by clearing the timer. It does not use `AbortController`, so a request that is already running completes but its reply is ignored.
+- With Demo execution disabled, the server reports reconciliation as not complete, giving the reason, and the overview shows it as a warning. This is the honest state, not a fault.
+- The 02-01 visual check still waits for the owner, and this page is now part of it.
+
+### Results after 02-02
+
+| Check | Result |
+|---|---|
+| `npm test` | 55/55 passed (46 earlier + 9 new), stable over 3 runs |
+| `npm run lint` | clean |
+| `npm run build` | new `wwwroot` assets `index-CZz04V-e.js` and `index-C5S3LlLm.css`, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 102/102; integration 236 passed, 3 skipped, 0 failed (239; 2 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
+| `scripts/secret-scan.ps1` | no findings in 187 files |
+| CI | not run: the push needs the owner's approval |
+
+New frontend tests:
+
+- Reported, Derived and Unavailable tags, with `null` shown as "not provided" and a reported zero kept as zero;
+- empty holdings shown as reported zero counts;
+- kill switch, trading mode, reconciliation and Live locked from the server, with no kill or unlock button;
+- a stale feed with its last quote time;
+- backend loss keeping the figures, marked stale with the last successful time, a green feed turning into a warning, and recovery clearing it;
+- a failed status read with the account still shown;
+- interval, backoff to the limit and recovery;
+- single-flight Refresh;
+- polling stopping on disconnect.

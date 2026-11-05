@@ -265,6 +265,25 @@ api.MapGet("/evidence/no-orders", async (string accountId, BrokerRuntimeOptions 
 
 api.MapGet("/health/feed", (IMarketDataService mds, string epic) => Results.Ok(new { epic, health = mds.GetFeedHealth(epic).ToString(), lastQuoteUtc = mds.LastQuoteUtc(epic) }));
 
+// Task 02-02: read-only operational status for the overview. Every value is the server's current state; nothing here can change it.
+api.MapGet("/status", (string accountId, BrokerRuntimeOptions options, ITradingControl control, IInstrumentSelectionService selections,
+    IMarketDataService mds, IClock clock) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var state = control.State;
+    var selected = selections.Current(accountId, options.Environment);
+    return Results.Ok(new
+    {
+        checkedUtc = clock.UtcNow,
+        killSwitchEngaged = state.KillSwitchEngaged,
+        tradingMode = state.Mode.ToString(),
+        reconciliationComplete = state.ReconciliationComplete,
+        suspensionReason = state.SuspensionReason,
+        // Feed health is only known for the selected instrument, and only once a quote has been requested for it.
+        feed = selected is null ? null : new { epic = selected.Epic, health = mds.GetFeedHealth(selected.Epic).ToString(), lastQuoteUtc = mds.LastQuoteUtc(selected.Epic) }
+    });
+});
+
 app.Run();
 
 public record MarketSnapshotRequest(string AccountId, string Epic, int SelectionVersion, string[]? Timeframes);

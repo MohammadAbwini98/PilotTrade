@@ -1,5 +1,4 @@
-import type { Runtime } from '../types/api'
-import type { Selection } from '../types/api'
+import type { Runtime, Selection } from '../types/api'
 
 export const MARKET_STATUS = ['Unknown', 'Open', 'Closed', 'Pre-market', 'Post-market', 'Halted', 'Maintenance']
 export const SIDE = ['BUY', 'SELL']
@@ -46,3 +45,21 @@ export const LINK_TEXT: Record<string, { text: string; tone: Tone }> = {
   'server-error': { text: 'Server error', tone: 'warn' },
   unreachable: { text: 'Unreachable', tone: 'danger' },
 }
+
+// Where a figure comes from: sent by the broker or simulator, worked out by the server, or missing.
+export type Provenance = 'Reported' | 'Derived' | 'Unavailable'
+export const provenance = (value: number | null | undefined, derived = false): Provenance =>
+  value === null || value === undefined ? 'Unavailable' : derived ? 'Derived' : 'Reported'
+
+export const TRADING_MODE: Record<string, { text: string; tone: Tone }> = {
+  MonitorOnly: { text: 'Monitor only', tone: 'ok' },
+  DemoAutomated: { text: 'Demo automated', tone: 'danger' },
+  LiveLocked: { text: 'Live locked', tone: 'ok' },
+  LiveArmed: { text: 'LIVE ARMED', tone: 'danger' },
+  Suspended: { text: 'Suspended', tone: 'warn' },
+}
+export const tradingModeLabel = (mode: string) => TRADING_MODE[mode] ?? { text: `Unknown (${mode})`, tone: 'danger' as Tone }
+
+export const FEED_TONE: Record<string, Tone> = { Healthy: 'ok', Stale: 'warn', Disconnected: 'danger', Unknown: 'neutral' }
+
+export const utcIso = (iso: string | null | undefined) => (iso ? utcTime(new Date(iso)) : 'never')

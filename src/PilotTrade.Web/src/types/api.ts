@@ -25,3 +25,9 @@ export type NoOrderEvidence = {
 export type ProbeEvidence = { allPassed: boolean; orderEndpointsCalled: boolean; steps: { name: string; passed: boolean; detail: string | null }[] }
 // Presence only: the backend never returns a stored credential.
 export type CredentialStatus = { apiKeyPresent: boolean; identifierPresent: boolean; passwordPresent: boolean }
+// GET /api/status: the server's own safety state. Feed health is known only for the selected instrument.
+export type FeedHealth = 'Healthy' | 'Stale' | 'Disconnected' | 'Unknown'
+export type OperationsStatus = {
+  checkedUtc: string; killSwitchEngaged: boolean; tradingMode: string; reconciliationComplete: boolean; suspensionReason: string | null
+  feed: { epic: string; health: FeedHealth; lastQuoteUtc: string | null } | null
+}

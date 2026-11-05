@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (2026-11-05)
+- Phase 02, task 02-02: the overview shows where each figure comes from (Reported, Derived or Unavailable), the server's kill-switch, trading-mode and reconciliation state, and feed health for the selected instrument. It also shows warnings for a lost backend, a stale feed, missing risk fields and Live locked. Polling runs every 15 s with backoff to 120 s, at most one update at a time, and data that is not fresh is marked stale. A new read-only `GET /api/status` serves this state.
+
 ## Unreleased (2026-11-04)
 - Phase 02, task 02-01: the owner UI is now a control-center shell with nine sidebar sections, hash addresses, safety badges, a masked account, backend link state and last refresh time. It is split into typed modules with an injectable API client and a per-page error boundary. Sections without a backend API show "Not available". There is no backend change, and Demo execution stays disabled while Live stays locked.
 

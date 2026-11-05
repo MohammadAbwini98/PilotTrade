@@ -5,10 +5,10 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
 | Task | Description | State | Evidence or reason |
 |---|---|---|---|
 | 02-01 | Owner control-center shell | **PARTIAL** | Code, local checks and Windows CI run 42061252141 on `56c5791` all pass. Still open: visual acceptance, which is BLOCKED and needs the owner. |
-| 02-02 | Overview dashboard | NOT STARTED | Waits for 02-01 to close. Polling, stale-data marks and backoff were moved here. |
+| 02-02 | Overview dashboard | **PARTIAL** | Code and local checks pass (web 55/55, .NET 102 + 236/239). Adds read-only `GET /api/status`. Still open: CI, which needs push approval, and the owner's visual check. |
 | 02-03 | Multi-instrument market monitor | NOT STARTED | There is no watchlist API yet. |
 | 02-04 | Claude/JEV observability | NOT STARTED | There is no decision-history API. The page shows "Not available". |
-| 02-05 | Risk Center / kill switch | NOT STARTED | The backend has kill-switch code but no HTTP API. The page shows "Not available" and has no button. |
+| 02-05 | Risk Center / kill switch | NOT STARTED | The kill-switch state is shown read-only from `/api/status` (02-02). There is no button and no write API. |
 | 02-06 | Orders / positions / reconciliation | NOT STARTED | The current read-only lists and no-order evidence were moved into the new page. |
 | 02-07 | Audit / alerts / diagnostics | NOT STARTED | There is no audit read API. |
 | 02-08 | Broker / credentials settings | NOT STARTED | Credential presence and the read-only check are shown. Replacing credentials is not offered yet. |
@@ -22,6 +22,8 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
    - the badges read Simulation or Capital.com Demo / Read-only, Demo execution disabled, and Live locked;
    - the account appears masked as `••••` plus its last four characters;
    - narrowing the window below 760 px moves the menu above the page.
+
+   - the 02-02 overview shows provenance tags, the safety card and the warning list. After you stop the backend, the figures are marked stale within one poll.
 
    Any screenshot must not show the token field while it is filled in.
 
