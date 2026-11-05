@@ -89,7 +89,7 @@ There are no backend, migration or API changes in 02-01.
 | `dotnet test PilotTrade.slnx` | unit 102/102 passed; integration 234 passed, 3 skipped, 0 failed (237). Same as the baseline, as expected with no backend change. |
 | `scripts/release-checks.tests.ps1` (Windows PowerShell 5.1) | 46 PASS, 0 FAIL |
 | `scripts/secret-scan.ps1` | no findings in 167 files |
-| CI on the 02-01 commit | **not run**: it needs a push, which awaits owner approval |
+| CI on the 02-01 commit | Windows CI run 42061252141 on `56c5791`: success |
 
 The new tests cover:
 

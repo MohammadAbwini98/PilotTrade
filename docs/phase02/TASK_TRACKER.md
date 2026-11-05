@@ -4,7 +4,7 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
 
 | Task | Description | State | Evidence or reason |
 |---|---|---|---|
-| 02-01 | Owner control-center shell | **PARTIAL** | Code and local checks are done: 46/46 frontend tests, lint, build, .NET 102 + 234/237, release checks and secret scan. Still open: CI on the commit, which needs a push, and visual acceptance, which is BLOCKED and needs the owner. |
+| 02-01 | Owner control-center shell | **PARTIAL** | Code, local checks and Windows CI run 42061252141 on `56c5791` all pass. Still open: visual acceptance, which is BLOCKED and needs the owner. |
 | 02-02 | Overview dashboard | NOT STARTED | Waits for 02-01 to close. Polling, stale-data marks and backoff were moved here. |
 | 02-03 | Multi-instrument market monitor | NOT STARTED | There is no watchlist API yet. |
 | 02-04 | Claude/JEV observability | NOT STARTED | There is no decision-history API. The page shows "Not available". |
@@ -17,7 +17,7 @@ This tracker is updated from code and test results on branch `feature/phase02-ow
 
 ## Owner actions for 02-01
 
-1. **Approve a push**, so that CI runs on the 02-01 commit.
+1. Done: pushed with owner approval; CI run 42061252141 passed on `56c5791`.
 2. **Visual check.** Open the running app in Edge or Chrome, connect, and go through the nine sidebar sections with the mouse and with the keyboard (Tab and Enter). Check these points:
    - the badges read Simulation or Capital.com Demo / Read-only, Demo execution disabled, and Live locked;
    - the account appears masked as `••••` plus its last four characters;
