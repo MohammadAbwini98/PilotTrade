@@ -225,7 +225,7 @@ The limits come from `MarketDataPolicy`. They are labeled "Built-in defaults" an
 | `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
 | `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
 | `scripts/secret-scan.ps1` | no findings in 188 files |
-| CI on the 02-03 commit | not run yet: CI needs a push, and a push needs the owner's approval |
+| CI on the 02-03 commit | Windows CI run 42082050125 on `6750c88`: success |
 
 New frontend tests:
 
@@ -242,4 +242,4 @@ New frontend tests:
 - A ready snapshot shows the instrument's precision and the candle age and gaps, and an instrument switch clears it.
 - A closed market blocks readiness, and a NO_TRADE names the limit behind it.
 
-Recommendation: **PARTIAL**. The code and all local checks pass. Still open: Windows CI, the owner's visual check and a real Demo check.
+Recommendation: **PARTIAL**. The code and all local checks pass. Windows CI passes. Still open: the owner's visual check and a real Demo check.
