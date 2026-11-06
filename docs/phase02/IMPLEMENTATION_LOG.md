@@ -310,8 +310,11 @@ No order path was added. A BUY or SELL candidate is labeled as not an order. The
 | `dotnet test PilotTrade.slnx` | unit 138/138 (18 new); integration 252 passed, 3 skipped, 0 failed (255; 6 new) |
 | `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
 | `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
-| `scripts/secret-scan.ps1` | no findings in 196 files |
-| CI on the 02-04 commit | not run yet: CI needs a push, and a push needs the owner's approval |
+| `scripts/secret-scan.ps1` | no findings in 205 files (after the fix below) |
+| CI on `22cc860` | **failed** (run 42278141243): the secret scan flagged the fake keys planted in the two new test files |
+| CI on the fix | not run yet: CI needs a push, and a push needs the owner's approval |
+
+The first local scan reported no findings because it reads only files tracked by git, and the new test files were not yet staged. The fix splits each fake key in the source (`"sk-" + "ant-..."`). The runtime value is unchanged, so the no-leak tests still check a credential-shaped string. Lesson: run the secret scan after staging.
 
 New frontend tests:
 
