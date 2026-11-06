@@ -50,7 +50,9 @@ builder.Services.AddSingleton<IPrivilegedCredentialManager>(sp =>
     new PrivilegedCredentialManager(sp.GetRequiredKeyedService<ISecretStore>("privileged")));
 builder.Services.AddSingleton<ICsrfTokenService, InMemoryCsrfTokenService>();
 builder.Services.AddSingleton<IPersistedExecutionState, EfPersistedExecutionState>();
-builder.Services.AddSingleton<IOrderJournal, EfOrderJournal>();
+// The adapter is stamped on every journal row and transition, so a simulator fill can never pass for a broker confirmation.
+builder.Services.AddSingleton<IOrderJournal>(sp => new EfOrderJournal(sp.GetRequiredService<PilotTradeDbContext>(), sp.GetRequiredService<BrokerRuntimeOptions>().Mode.ToString()));
+builder.Services.AddSingleton<IOrderLedgerReader>(sp => new EfOrderLedgerReader(sp.GetRequiredService<DbContextOptions<PilotTradeDbContext>>()));
 builder.Services.AddSingleton<ITradingControl>(sp =>
 {
     var options = sp.GetRequiredService<BrokerRuntimeOptions>();
@@ -81,6 +83,7 @@ builder.Services.AddHttpClient("capital", c => c.Timeout = TimeSpan.FromSeconds(
 builder.Services.AddSingleton<OrderReconciliationService>();
 builder.Services.AddSingleton<KillSwitchService>();
 builder.Services.AddSingleton<RiskMonitorService>();
+builder.Services.AddSingleton<OrderLedgerService>();
 builder.Services.AddHostedService<StartupReconciliationService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
@@ -394,6 +397,25 @@ api.MapGet("/risk", async (string accountId, BrokerRuntimeOptions options, RiskM
     if (RefuseAccount(options, accountId) is { } refused) return refused;
     var source = options.Mode == BrokerMode.CapitalDemo ? "Capital.com Demo (read-only)" : "Simulator";
     return Results.Ok(await risk.BuildAsync(options.Environment, accountId, selections.Current(accountId, options.Environment)?.Epic, source, ct));
+});
+
+// Task 02-06: the read-only order ledger: journal entries with their state history and audit references, broker holdings,
+// broker confirms, per-entry reconciliation and alerts. Protected identifiers are masked. There is no write route for orders.
+api.MapGet("/ledger", async (string accountId, string? epic, string? status, string? q, int? limit, int? offset,
+    BrokerRuntimeOptions options, OrderLedgerService ledger, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var take = limit ?? 25;
+    var skip = offset ?? 0;
+    epic = string.IsNullOrWhiteSpace(epic) ? null : epic.Trim();
+    q = string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+    status = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
+    if (take is < 1 or > OrderLedgerService.MaxLimit || skip is < 0 or > 1_000_000
+        || (epic is not null && (epic.Length > 64 || !epic.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-')))
+        || (q is not null && q.Length > 64)
+        || (status is not null && !OrderLedgerService.StatusGroups.Contains(status)))
+        return Results.BadRequest(new { error = "InvalidFilter", statusGroups = OrderLedgerService.StatusGroups, maxLimit = OrderLedgerService.MaxLimit });
+    return Results.Ok(await ledger.BuildAsync(accountId, new LedgerQuery(epic, OrderLedgerService.StatesFor(status), q, skip, take), ct));
 });
 
 // Task 02-05: the persisted kill-switch state, and the checks a clear would have to pass now. Reading it changes nothing.

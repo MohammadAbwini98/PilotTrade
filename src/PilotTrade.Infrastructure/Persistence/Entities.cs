@@ -140,6 +140,24 @@ public class OrderJournalEntity
     public string? RejectionReason { get; set; }
     public DateTimeOffset UpdatedUtc { get; set; }
     public string? CorrelationId { get; set; }
+    // Task 02-06. Null on rows written before this build.
+    public string? Side { get; set; }
+    public decimal? Size { get; set; }
+    public string? Adapter { get; set; }
+}
+
+// Task 02-06: one row per journal state change, written in the same save as the change itself.
+public class OrderStateTransitionEntity
+{
+    public long Id { get; set; }
+    public string CommandId { get; set; } = "";
+    public string Environment { get; set; } = "";
+    public string AccountId { get; set; } = "";
+    public string? FromState { get; set; }
+    public string ToState { get; set; } = "";
+    public DateTimeOffset OccurredUtc { get; set; }
+    public string? Reason { get; set; }
+    public string Adapter { get; set; } = "";
 }
 
 public class ExecutionStateEntity

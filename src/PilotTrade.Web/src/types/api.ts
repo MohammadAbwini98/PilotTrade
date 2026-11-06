@@ -89,3 +89,32 @@ export type KillSwitchState = {
   checkedUtc: string; engaged: boolean; reason: string | null; changedUtc: string | null; changedBy: string | null; reconciliation: string
   clearChecks: ClearCheck[]; clearPhrase: string; maxReasonLength: number
 }
+
+// Task 02-06: the read-only order ledger. Every ID is masked on the server; Evidence and Reconciliation are server-side labels.
+export type LedgerAlert = { severity: 'danger' | 'warn' | 'info'; kind: string; message: string }
+export type LedgerTransition = { fromState: string | null; toState: string; occurredUtc: string; reason: string | null; source: string }
+export type LedgerAudit = { id: string; occurredUtc: string; category: string; action: string; actor: string; sensitiveRedacted: boolean; refers: string }
+export type LedgerEntry = {
+  commandRef: string; intentRef: string; accountRef: string; epic: string; side: string | null; size: number | null
+  state: string; statusGroup: string; evidence: string; reconciliation: string; reconciliationDetail: string; retryState: string | null
+  dealReference: string | null; dealIds: string | null
+  createdUtc: string; submittedUtc: string | null; confirmedUtc: string | null; updatedUtc: string; reason: string | null
+  transitions: LedgerTransition[]; audit: LedgerAudit[]
+}
+export type LedgerPosition = {
+  positionRef: string; epic: string; direction: string; size: number; openLevel: number | null; currentLevel: number | null
+  unrealizedPnL: number | null; currency: string | null; openedUtc: string; asOfUtc: string; provenance: string; inJournal: boolean
+}
+export type LedgerWorkingOrder = {
+  orderRef: string; epic: string; direction: string; type: string; size: number; level: number | null
+  createdUtc: string; asOfUtc: string; provenance: string; inJournal: boolean
+}
+export type LedgerConfirm = { commandRef: string; epic: string; dealReference: string; dealIds: string | null; state: string; evidence: string; confirmedUtc: string | null; updatedUtc: string }
+export type LedgerView = {
+  checkedUtc: string; source: string; executionEnabled: boolean; accountRef: string
+  startup: { outcome: string; complete: boolean; suspensionReason: string | null }
+  statusCounts: Record<string, number>; journalTotal: number; alerts: LedgerAlert[]
+  journal: { total: number; offset: number; limit: number; items: LedgerEntry[] }
+  positions: LedgerPosition[] | null; workingOrders: LedgerWorkingOrder[] | null; confirms: LedgerConfirm[]; readErrors: string[]
+}
+export type LedgerFilter = { q: string; epic: string; status: string; offset: number }

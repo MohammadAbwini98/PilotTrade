@@ -7,13 +7,17 @@ using PilotTrade.Domain.Execution;
 public sealed class EfOrderJournal : IOrderJournal
 {
     private readonly PilotTradeDbContext _db;
-    public EfOrderJournal(PilotTradeDbContext db) { _db = db; }
+    private readonly string _adapter;
+
+    // The adapter (Simulation or CapitalDemo) is stamped on every row and transition, so a simulated fill can never be read as a broker confirmation.
+    public EfOrderJournal(PilotTradeDbContext db, string adapter = "Unknown") { _db = db; _adapter = adapter; }
 
     private static OrderJournalEntry ToEntry(OrderJournalEntity e) => new(
         e.CommandId, e.IntentId, Enum.Parse<TradingEnvironment>(e.Environment), e.AccountId, e.Epic,
         Enum.Parse<OrderState>(e.State), e.RequestDigest, e.DecisionSnapshotId, e.RiskAuthorizationJson,
         e.BrokerDealReference, e.BrokerDealId, e.CreatedUtc, e.SubmittedUtc, e.ConfirmedUtc,
-        e.RejectionReason, e.UpdatedUtc, e.CorrelationId);
+        e.RejectionReason, e.UpdatedUtc, e.CorrelationId,
+        Enum.TryParse<OrderSide>(e.Side, out var side) ? side : null, e.Size);
 
     private static OrderJournalEntity ToEntity(OrderJournalEntry e) => new()
     {
@@ -22,12 +26,23 @@ public sealed class EfOrderJournal : IOrderJournal
         DecisionSnapshotId = e.DecisionSnapshotId, RiskAuthorizationJson = e.RiskAuthorizationJson,
         BrokerDealReference = e.BrokerDealReference, BrokerDealId = e.BrokerDealId, CreatedUtc = e.CreatedUtc,
         SubmittedUtc = e.SubmittedUtc, ConfirmedUtc = e.ConfirmedUtc, RejectionReason = e.RejectionReason,
-        UpdatedUtc = e.UpdatedUtc, CorrelationId = e.CorrelationId
+        UpdatedUtc = e.UpdatedUtc, CorrelationId = e.CorrelationId, Side = e.Side?.ToString(), Size = e.Size
+    };
+
+    private OrderStateTransitionEntity Transition(OrderJournalEntry entry, string? from) => new()
+    {
+        CommandId = entry.CommandId, Environment = entry.Environment.ToString(), AccountId = entry.AccountId,
+        FromState = from, ToState = entry.State.ToString(), OccurredUtc = entry.UpdatedUtc,
+        Reason = entry.RejectionReason is { Length: > 200 } r ? r[..200] : entry.RejectionReason, Adapter = _adapter
     };
 
     public async Task<OrderJournalEntry> CreateAsync(OrderJournalEntry entry, CancellationToken ct)
     {
-        _db.OrderJournals.Add(ToEntity(entry));
+        var entity = ToEntity(entry);
+        entity.Adapter = _adapter;
+        _db.OrderJournals.Add(entity);
+        // The first transition is saved with the row itself, so the history can never miss the start.
+        _db.OrderStateTransitions.Add(Transition(entry, null));
         await _db.SaveChangesAsync(ct);
         return entry;
     }
@@ -35,8 +50,14 @@ public sealed class EfOrderJournal : IOrderJournal
     public async Task UpdateAsync(OrderJournalEntry entry, CancellationToken ct)
     {
         var e = await _db.OrderJournals.FirstAsync(x => x.CommandId == entry.CommandId, ct);
+        var from = e.State;
         var updated = ToEntity(entry);
+        // Side, size and adapter are set once at creation; an update never clears them.
+        updated.Adapter = e.Adapter;
+        updated.Side ??= e.Side;
+        updated.Size ??= e.Size;
         _db.Entry(e).CurrentValues.SetValues(updated);
+        if (from != updated.State) _db.OrderStateTransitions.Add(Transition(entry, from));
         await _db.SaveChangesAsync(ct);
     }
 

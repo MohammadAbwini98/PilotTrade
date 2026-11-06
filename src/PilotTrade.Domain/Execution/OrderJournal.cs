@@ -19,7 +19,9 @@ public sealed record OrderJournalEntry(
     DateTimeOffset? ConfirmedUtc,
     string? RejectionReason,
     DateTimeOffset UpdatedUtc,
-    string? CorrelationId);
+    string? CorrelationId,
+    OrderSide? Side = null,
+    decimal? Size = null);
 
 public interface IOrderJournal
 {

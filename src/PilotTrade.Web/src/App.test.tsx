@@ -78,6 +78,20 @@ const decisionRow = (id: string, extra: Record<string, unknown> = {}) => ({
 let routes: Record<string, Route>
 let calls: Call[]
 
+// Task 02-06. Ledger fixtures carry masked IDs only, as the server sends them.
+const emptyLedger = {
+  checkedUtc: '2026-11-07T10:00:00Z', source: 'Simulator (no Capital.com orders)', executionEnabled: false, accountRef: '••••CC-A',
+  startup: { outcome: 'Complete', complete: true, suspensionReason: null },
+  statusCounts: { Pending: 0, Unknown: 0, Rejected: 0, Cancelled: 0, Completed: 0 }, journalTotal: 0, alerts: [],
+  journal: { total: 0, offset: 0, limit: 25, items: [] }, positions: [], workingOrders: [], confirms: [], readErrors: [],
+}
+const ledgerEntry = (ref: string, state: string, statusGroup: string, reconciliation: string, extra: Record<string, unknown> = {}) => ({
+  commandRef: `••••${ref}`, intentRef: `••••i${ref.slice(1)}`, accountRef: '••••CC-A', epic: 'EURUSD', side: 'Buy', size: 1,
+  state, statusGroup, evidence: 'Locally inferred', reconciliation, reconciliationDetail: `${reconciliation} detail`, retryState: null,
+  dealReference: null, dealIds: null, createdUtc: '2026-11-07T09:00:00Z', submittedUtc: null, confirmedUtc: null, updatedUtc: '2026-11-07T09:01:00Z',
+  reason: null, transitions: [{ fromState: null, toState: 'Proposed', occurredUtc: '2026-11-07T09:00:00Z', reason: null, source: 'CapitalDemo' }], audit: [], ...extra,
+})
+
 function defaults(): Record<string, Route> {
   return {
     'GET /api/runtime': { status: 200, body: { mode: 'Simulation', environment: 'Demo', accountId: 'ACC-A', executionEnabled: false, liveLocked: true } },
@@ -109,6 +123,7 @@ function defaults(): Record<string, Route> {
     'GET /api/decisions': { status: 200, body: { total: 0, items: [] } },
     'GET /api/risk': { status: 200, body: riskView },
     'GET /api/kill-switch': { status: 200, body: killOff },
+    'GET /api/ledger': { status: 200, body: emptyLedger },
   }
 }
 
@@ -368,6 +383,9 @@ describe('missing financial values', () => {
   it('shows "not provided" for null broker values and never zero', async () => {
     routes['GET /api/account'] = { status: 200, body: { ...account, equity: null, freeMargin: null, marginUsed: null, realizedPnLToday: null } }
     routes['GET /api/positions'] = { status: 200, body: [{ positionId: 'p1', epic: 'EURUSD', direction: 0, size: 1, openLevel: null, unrealizedPnL: null }] }
+    routes['GET /api/ledger'] = { status: 200, body: { ...emptyLedger, positions: [{
+      positionRef: '••••os-1', epic: 'EURUSD', direction: 'Buy', size: 1, openLevel: null, currentLevel: null, unrealizedPnL: null, currency: null,
+      openedUtc: '2026-11-07T09:00:00Z', asOfUtc: '2026-11-07T10:00:00Z', provenance: 'Simulator', inJournal: false }] } }
     const user = await connect()
     const values = (label: string) => screen.getByText(label).nextElementSibling!.textContent
     expect(values('Equity')).toBe('not provided')
@@ -376,7 +394,8 @@ describe('missing financial values', () => {
     expect(values('Realized P&L today')).toBe('not provided')
     expect(values('Balance')).toBe('1000.00 USD')
     await goTo(user, 'Orders & Positions')
-    expect(screen.getByText(/EURUSD BUY 1/).textContent).toBe('EURUSD BUY 1 @ not provided | P&L not provided')
+    const held = within(await screen.findByRole('table', { name: 'Positions' })).getAllByRole('row')[1]
+    expect([...held.querySelectorAll('td')].map(td => td.textContent).slice(2, 6)).toEqual(['Buy 1', 'not provided', 'not provided', 'not provided'])
     await goTo(user, 'Markets')
     await user.type(screen.getByRole('textbox', { name: 'Search instruments' }), 'a')
     await user.click(screen.getByRole('button', { name: 'Search' }))
@@ -599,7 +618,8 @@ describe('control center shell', () => {
     await goTo(user, 'Orders & Positions')
     await goTo(user, 'Overview')
     expect(screen.getByText('Balance').nextElementSibling!.textContent).toBe('1000.00 USD')
-    expect(calls.length).toBe(reads)
+    // The Orders page reads its ledger each time it opens, as the Risk Center reads risk; nothing else is fetched again.
+    expect(calls.filter(c => c.path !== '/api/ledger').length).toBe(reads)
   })
 
   it('shows sections without a backend API as not available, with no sample figures', async () => {
@@ -668,11 +688,11 @@ describe('control center shell', () => {
 
   it('a page that fails to draw is replaced by a notice while the shell keeps working', async () => {
     // A reply the page cannot draw must not take the header or the menu down with it.
-    routes['GET /api/positions'] = { status: 200, body: [null] }
+    routes['GET /api/ledger'] = { status: 200, body: { ...emptyLedger, positions: [null] } }
     const user = await connect()
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     await goTo(user, 'Orders & Positions')
-    expect(screen.getByRole('heading', { level: 2, name: 'This page could not be shown' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { level: 2, name: 'This page could not be shown' })).toBeTruthy()
     expect(screen.getByRole('list', { name: 'Safety state' })).toBeTruthy()
     await goTo(user, 'Overview')
     expect(screen.getByText('Balance')).toBeTruthy()
@@ -1215,5 +1235,116 @@ describe('risk center (task 02-05)', () => {
     await user.type(screen.getByLabelText('Reason for the stop'), 'disk full')
     await user.click(screen.getByRole('button', { name: 'Engage kill switch' }))
     await screen.findByText(/could not be saved, so it would not survive a restart/)
+  })
+})
+
+describe('orders, positions and reconciliation (task 02-06)', () => {
+  const ledgerCalls = () => calls.filter(c => c.path === '/api/ledger')
+  const lastLedger = () => ledgerCalls()[ledgerCalls().length - 1]
+  const row = (ref: string) => screen.getByRole('row', { name: `Order ••••${ref}` })
+  const cell = (ref: string, col: number) => row(ref).querySelectorAll(':scope > td')[col] as HTMLElement
+
+  it('shows an empty journal with zero counts, disabled submission and no order controls', async () => {
+    const user = await connect()
+    await goTo(user, 'Orders & Positions')
+    expect((await screen.findByLabelText('No journal entries')).textContent).toMatch(/^No orders in the journal yet/)
+    expect(within(screen.getByRole('list', { name: 'Orders by status' })).getAllByRole('listitem').map(li => li.textContent))
+      .toEqual(['Pending: 0', 'Unknown: 0', 'Rejected: 0', 'Cancelled: 0', 'Completed: 0'])
+    expect(screen.getByText('Order submission').nextElementSibling!.textContent).toBe('Disabled (read-only)')
+    expect(screen.getByText('None held at the broker.')).toBeTruthy()
+    const read = ledgerCalls()[0].url.searchParams
+    expect([read.get('accountId'), read.get('limit'), read.get('offset')]).toEqual(['ACC-A', '25', '0'])
+    expect(screen.queryByRole('button', { name: /place|amend|cancel|close|buy|sell|submit|execute|enable|live/i })).toBeNull()
+  })
+
+  it('keeps pending, rejected, partial, ambiguous and blocked orders apart, and never shows them as completed', async () => {
+    routes['GET /api/ledger'] = { status: 200, body: { ...emptyLedger,
+      statusCounts: { Pending: 1, Unknown: 1, Rejected: 1, Cancelled: 0, Completed: 2 }, journalTotal: 5,
+      alerts: [
+        { severity: 'danger', kind: 'UnknownOutcome', message: '1 orders have an unknown broker outcome.' },
+        { severity: 'danger', kind: 'ReconciliationBlocked', message: '1 completed orders have no deal id.' },
+      ],
+      journal: { total: 5, offset: 0, limit: 25, items: [
+        ledgerEntry('pend', 'Proposed', 'Pending', 'Not sent'),
+        ledgerEntry('rjct', 'Rejected', 'Rejected', 'Not applicable', { reason: 'Risk rejected: MaxPositions' }),
+        ledgerEntry('part', 'Confirmed', 'Completed', 'Partial', { evidence: 'Broker-observed', dealReference: '••••ef-1', dealIds: '••••-A-1, ••••-A-2' }),
+        ledgerEntry('ambg', 'Submitting', 'Unknown', 'Blocked', { retryState: 'Not retried. Duplicate submissions of this intent are refused.',
+          transitions: [
+            { fromState: null, toState: 'Proposed', occurredUtc: '2026-11-07T09:00:00Z', reason: null, source: 'CapitalDemo' },
+            { fromState: 'Proposed', toState: 'Submitting', occurredUtc: '2026-11-07T09:00:01Z', reason: null, source: 'CapitalDemo' },
+          ],
+          audit: [{ id: 'audit-77', occurredUtc: '2026-11-07T09:00:02Z', category: 'Execution', action: 'Submit', actor: 'system', sensitiveRedacted: true, refers: 'Order intent' }] }),
+        ledgerEntry('blkd', 'Confirmed', 'Completed', 'Blocked', { dealReference: '••••ef-2' }),
+      ] },
+      confirms: [{ commandRef: '••••sim1', epic: 'EURUSD', dealReference: '••••ef-9', dealIds: null, state: 'Confirmed', evidence: 'Simulator', confirmedUtc: null, updatedUtc: '2026-11-07T09:00:00Z' }],
+    } }
+    const user = await connect()
+    await goTo(user, 'Orders & Positions')
+    await screen.findByRole('table', { name: 'Order journal' })
+    expect(within(screen.getByRole('list', { name: 'Ledger alerts' })).getAllByRole('listitem').every(li => li.className === 'tone-danger')).toBe(true)
+
+    expect([cell('pend', 4).textContent, cell('pend', 6).textContent]).toEqual(['Proposed', 'Not sentNot sent detail'])
+    expect(cell('pend', 4).className).toBe('tone-warn')
+    expect(cell('rjct', 4).textContent).toBe('Rejected')
+    expect(within(row('rjct')).getByLabelText('Details for ••••rjct').textContent).toContain('Risk rejected: MaxPositions')
+    expect(cell('part', 6).textContent).toMatch(/^Partial/)
+    expect(cell('part', 5).textContent).toBe('Broker-observed')
+    // Ambiguous: shown as unknown, never complete, with its retry state, history and audit drill-down.
+    expect(cell('ambg', 4).textContent).toBe('Submitting: outcome unknown')
+    expect(cell('ambg', 4).className).toBe('tone-danger')
+    expect(within(row('ambg')).getByText('Retry').nextElementSibling!.textContent).toMatch(/^Not retried/)
+    const history = within(row('ambg')).getByRole('table', { name: 'State history for ••••ambg', hidden: true })
+    expect(within(history).getAllByRole('row', { hidden: true }).slice(1).map(r => r.textContent))
+      .toEqual(['09:00:00 UTCcreatedProposedCapitalDemo', '09:00:01 UTCProposedSubmittingCapitalDemo'])
+    expect(within(row('ambg')).getByRole('list', { name: 'Audit events for ••••ambg', hidden: true }).textContent)
+      .toBe('09:00:02 UTC Execution/Submit by system (event audit-77, matched by Order intent), details redacted')
+    // Marked complete without a deal id: blocked, not completed.
+    expect(cell('blkd', 4).textContent).toBe('Confirmed, not reconciled')
+    expect(cell('blkd', 4).className).toBe('tone-danger')
+    // A simulator fill is not a Capital.com confirmation.
+    const confirm = within(screen.getByRole('table', { name: 'Broker confirmations' })).getAllByRole('row')[1]
+    expect(confirm.querySelectorAll('td')[5].textContent).toBe('Simulator')
+    expect(posts()).toEqual([])
+  })
+
+  it('filters and pages through the journal with GET requests only', async () => {
+    const items = Array.from({ length: 25 }, (_, i) => ledgerEntry(`n${String(i).padStart(3, '0')}`, 'Rejected', 'Rejected', 'Not applicable'))
+    routes['GET /api/ledger'] = url => ({ status: 200, body: { ...emptyLedger, journalTotal: 30,
+      journal: { total: 30, offset: Number(url.searchParams.get('offset')), limit: 25, items: url.searchParams.get('offset') === '25' ? items.slice(0, 5) : items } } })
+    const user = await connect()
+    await goTo(user, 'Orders & Positions')
+    expect(await screen.findByText(/^Showing 1–25 of 30/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Previous page' })).toHaveProperty('disabled', true)
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'GOLD')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'Rejected')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() => expect(lastLedger().url.searchParams.get('q')).toBe('GOLD'))
+    expect(lastLedger().url.searchParams.get('status')).toBe('Rejected')
+    await user.click(screen.getByRole('button', { name: 'Next page' }))
+    expect(await screen.findByText(/^Showing 26–30 of 30/)).toBeTruthy()
+    expect([...lastLedger().url.searchParams.entries()]).toEqual([['accountId', 'ACC-A'], ['q', 'GOLD'], ['status', 'Rejected'], ['limit', '25'], ['offset', '25']])
+    expect(screen.getByRole('button', { name: 'Next page' })).toHaveProperty('disabled', true)
+    expect(calls.every(c => c.method === 'GET')).toBe(true)
+  })
+
+  it('shows a failed ledger read as an error, never as an empty journal', async () => {
+    routes['GET /api/ledger'] = { status: 500, body: { error: 'boom' } }
+    const user = await connect()
+    await goTo(user, 'Orders & Positions')
+    expect((await screen.findByText(/^Ledger could not be read/)).textContent).toContain('Order states are Unknown, not empty.')
+    expect(screen.queryByText(/No orders in the journal yet/)).toBeNull()
+    expect(screen.getByText('Journal not loaded.')).toBeTruthy()
+  })
+
+  it('shows unreadable broker holdings as Unknown and holdings outside the journal as such', async () => {
+    routes['GET /api/ledger'] = { status: 200, body: { ...emptyLedger, positions: null, readErrors: ['Positions could not be read.'],
+      alerts: [{ severity: 'warn', kind: 'ReadError', message: 'Positions could not be read.' }],
+      workingOrders: [{ orderRef: '••••wo-1', epic: 'GOLD', direction: 'Sell', type: 'Limit', size: 2, level: null, createdUtc: '2026-11-07T09:00:00Z', asOfUtc: '2026-11-07T10:00:00Z', provenance: 'Broker-observed (Capital.com Demo, read-only)', inJournal: false }] } }
+    const user = await connect()
+    await goTo(user, 'Orders & Positions')
+    expect(await screen.findByText('Positions could not be read: Unknown.')).toBeTruthy()
+    const wo = within(screen.getByRole('table', { name: 'Working orders' })).getAllByRole('row')[1]
+    expect([...wo.querySelectorAll('td')].map(td => td.textContent).slice(0, 7))
+      .toEqual(['••••wo-1', 'GOLD', 'Sell 2', 'Limit', 'not provided', 'Broker-observed (Capital.com Demo, read-only)', 'No'])
   })
 })

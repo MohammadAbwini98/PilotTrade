@@ -385,3 +385,58 @@ There is no Enable Live button and no control that turns on Capital.com Demo exe
 New tests cover these failure cases from the task: stale quote, missing risk data, open working orders, mismatched account and uncertain broker confirmation. They also cover reconciliation outcomes, reason and phrase validation, an audit failure, a save failure, the guards (owner, account, CSRF) and persistence across restart.
 
 Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI on this commit and the owner's visual check.
+
+## 02-06: Orders, positions and reconciliation
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Domain/Execution/OrderJournal.cs`, `src/PilotTrade.Application/Services/ExecutionGateway.cs` | A journal entry also records the order's side and size, so the ledger never has to guess them. |
+| `src/PilotTrade.Infrastructure/Persistence/Entities.cs`, `PilotTradeDbContext.cs` | `OrderJournals` gains `Side`, `Size` and `Adapter` (the runtime mode that wrote the row, such as `Simulation` or `CapitalDemo`). New `OrderStateTransitions` table (from state, to state, time, reason, adapter), indexed by command id. |
+| `src/PilotTrade.Infrastructure/Migrations/20261106231204_AddOrderStateHistory*.cs`, `PilotTradeDbContextModelSnapshot.cs` | **Migration:** adds three nullable columns, one table and two indexes. It only adds. |
+| `src/PilotTrade.Infrastructure/Persistence/EfOrderJournal.cs` | Every create and every state change writes a transition in the same save as the journal row, so the history cannot drift from the journal. An update keeps the side, size and adapter of the existing row. The reason is cut to 200 characters. |
+| `src/PilotTrade.Domain/Execution/OrderLedger.cs`, `src/PilotTrade.Infrastructure/Persistence/EfOrderLedgerReader.cs` | A read-only reader with its own database context. It filters by environment and account first, then instrument, status and search text, and pages newest first. It returns the transitions and the audit events that refer to each entry on the page (by command id, intent id or correlation id). The audit `DetailsJson` is never read. |
+| `src/PilotTrade.Application/Services/OrderLedgerService.cs` | Builds the ledger view. **IDs:** only the last four characters, or `••••` alone for a short one. **Evidence:** `Broker-observed` only for a Capital.com row (not the simulator) with a deal reference, `Simulator` for simulator rows, `Locally inferred` or `Unknown source` otherwise. **Reconciliation:** `Not sent`, `Not applicable`, `Matched`, `Partial`, `Not held` (no closure is claimed), `Blocked` (outcome unknown, or complete without a deal id) or `Unknown` (the broker could not be read). **Alerts:** unknown outcomes, blocked reconciliation, deals the broker no longer holds, broker items not in the journal, items from another account (dropped), read errors, and a startup reconciliation that is not complete. Unknown outcomes say they are never resent. |
+| `src/PilotTrade.Api/Program.cs` | **API change:** `GET /api/ledger?accountId=&epic=&status=&q=&limit=&offset=`. It needs the owner token and the configured account. Bad filters get 400 `InvalidFilter` (limit 1 to 100, epic and search at most 64 characters, epic letters, digits, `.`, `_` and `-` only, status one of Pending, Unknown, Rejected, Cancelled or Completed). There is no write route. The journal registration now passes the adapter name. |
+| `tests/PilotTrade.UnitTests/OrderLedgerTests.cs` | 21 new unit tests (below). |
+| `tests/PilotTrade.IntegrationTests/LedgerEndpointTests.cs` | 6 new integration tests (below). |
+| `src/PilotTrade.Web/src/types/api.ts`, `hooks/useOwnerSession.ts` | Ledger types and state. The ledger has its own error, so a failed read never shows as an empty journal. Only the newest reply for the current account lands, and the ledger is cleared on an account switch or disconnect. |
+| `src/PilotTrade.Web/src/features/orders/OrdersPage.tsx` | **Order ledger:** source, account, order submission state, startup reconciliation, counts by status and alerts.<br>**Order journal:** search, instrument and status filters, pages of 25, and per row the state, evidence and reconciliation with a drill-down to the state history and audit events. A completed order that is blocked or unknown reads "not reconciled"; an unknown outcome reads "outcome unknown". Both are red.<br>**Positions** and **working orders** with source and an "In journal" column, and **broker confirmations**. The no-order evidence panel is kept. |
+| `src/PilotTrade.Web/src/App.test.tsx` | 5 new tests (below). Three existing tests now read the ledger: the "not provided" check reads the positions table, the error-boundary test sends an undrawable ledger, and the "no fetch again" test allows the ledger read that every opening of the page makes. |
+| `src/PilotTrade.Api/wwwroot/*` | rebuilt asset `index-NS09fQzT.js`; the old `index-BUisuwy6.js` is removed |
+
+No order request is sent anywhere in this task. The ledger only reads. Demo order submission stays disabled and Live stays locked.
+
+### Acceptance
+
+- **No manual action can call an order endpoint:** the page has no place, amend, cancel or close control. A frontend test pages and filters and checks that every request is a GET; another checks that no button matches place, amend, cancel, close, buy, sell, submit, execute, enable or live. An integration test checks that POST, PUT, DELETE and PATCH on `/api/ledger` are not routed.
+- **Audit drill-down without secrets:** an integration test creates journal entries, restarts the host on the same database, and reads the same history and audit events. The response never contains the full command, intent or deal ids, nor anything from the audit `DetailsJson`. An audit event for another account with the same correlation id is not shown.
+- **Unknown and blocked never look complete:** unit and frontend tests cover a Submitting order (outcome unknown), a Confirmed order without a deal id (blocked), and a broker that cannot be read (Unknown). A simulator row is never shown as a Capital.com confirmation.
+- **Scenarios:** empty, pending, rejected, partial and ambiguous are covered by frontend tests, and by unit and integration tests on the server.
+
+### Migration, restart, backup and rollback
+
+- The `AddOrderStateHistory` migration runs at startup and only adds. **Restart the API** after updating to apply it. Existing journal rows keep their data; they have no side, size, adapter or history, so they show as `Unknown source` with "No recorded transitions".
+- Back up first: stop the API, then run `scripts/backup-data.ps1`.
+- Rollback: stop the API, restore the backup, and run the previous build. The previous build also runs on the new database, since it ignores the extra columns and table. It has no ledger endpoint.
+
+### Limits
+
+- Only this app's journal is shown. Broker activity history (fills and closures read from Capital.com) is not read, so a deal the broker no longer holds is `Not held`, never `Closed`.
+- Order submission is disabled, so in normal use the journal is empty.
+- Not checked: the owner's visual check, a real Demo account, and Windows CI on this commit.
+
+### Results after 02-06
+
+| Check | Result |
+|---|---|
+| `npx vitest run` | 79/79 passed (74 earlier + 5 new) |
+| `npx tsc --noEmit`, `npm run lint` | clean |
+| `npm run build` | new `wwwroot` asset, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 189/189 (21 new); integration 264 passed, 3 skipped, 0 failed (267; 6 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
+| `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
+| `scripts/secret-scan.ps1` | run after staging; result in the commit handoff |
+
+Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI on this commit and the owner's visual check.

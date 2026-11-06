@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, AiStatus, ClearCheck, CredentialStatus, KillSwitchState, RiskView, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
+  Account, AccountSummary, AiStatus, ClearCheck, CredentialStatus, KillSwitchState, LedgerFilter, LedgerView, RiskView, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
   Position, ProbeEvidence, Runtime, Selection, SnapshotResult, Watchlist, WorkingOrder,
 } from '../types/api'
 
 const q = encodeURIComponent
+export const LEDGER_PAGE = 25
 
 // The overview refreshes itself on this interval. After a failed update the wait doubles, up to the maximum, and returns to normal after a success.
 // Tests shorten these; the app never changes them.
@@ -67,6 +68,10 @@ export function useOwnerSession() {
   const [refusedChecks, setRefusedChecks] = useState<ClearCheck[] | null>(null)
   const [killBusy, setKillBusy] = useState(false)
   const riskGeneration = useRef(0)
+  // Task 02-06. The ledger keeps its own error, so a failed read shows as such and never as an empty journal.
+  const [ledger, setLedger] = useState<LedgerView | null>(null)
+  const [ledgerFailure, setLedgerFailure] = useState('')
+  const ledgerGeneration = useRef(0)
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
@@ -150,6 +155,8 @@ export function useOwnerSession() {
     setAiStatus(null); setDecisions(null); setDecision(null)
     riskGeneration.current++
     setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
+    ledgerGeneration.current++
+    setLedger(null); setLedgerFailure('')
     setAccountId(id)
     accountRef.current = id
     setSelection(null)
@@ -187,6 +194,8 @@ export function useOwnerSession() {
     setAiStatus(null); setDecisions(null); setDecision(null)
     riskGeneration.current++
     setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
+    ledgerGeneration.current++
+    setLedger(null); setLedgerFailure('')
     ownerToken.current = ''
     accountRef.current = ''
     setStatus(null); setStatusFailed(false); setUpdateFailure(null)
@@ -371,6 +380,22 @@ export function useOwnerSession() {
     if (current === generation.current) setNoOrders(r)
   })
 
+  // Read-only: one GET. Only the newest reply for the current account lands.
+  const loadLedger = async (f: LedgerFilter) => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++ledgerGeneration.current
+    const filter = [f.q.trim() && `&q=${q(f.q.trim())}`, f.epic.trim() && `&epic=${q(f.epic.trim())}`, f.status && `&status=${q(f.status)}`].join('')
+    try {
+      const view = await api.get<LedgerView>(`/api/ledger?accountId=${q(id)}${filter}&limit=${LEDGER_PAGE}&offset=${Math.max(0, f.offset)}`)
+      if (current !== ledgerGeneration.current || id !== accountRef.current) return
+      setLedger(view); setLedgerFailure('')
+    } catch (e) {
+      if (current !== ledgerGeneration.current || id !== accountRef.current) return
+      setLedgerFailure(message(e))
+    }
+  }
+
   const testConnection = () => guard(async () => setEvidence(await api.post<ProbeEvidence>('/api/demo/test-connection', {})))
 
   const loadCredentialStatus = () => guard(async () => setCredentials(await api.get<CredentialStatus>('/api/demo/credential-status')))
@@ -378,10 +403,10 @@ export function useOwnerSession() {
   return {
     runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
     snapshot, evidence, noOrders, credentials, watchlist, watch, policy, aiStatus, decisions, decision, busy: busy > 0, err,
-    risk, riskFailure, killSwitch, killFailure, killReadFailure, killMessage, refusedChecks, killBusy,
+    risk, riskFailure, killSwitch, killFailure, killReadFailure, killMessage, refusedChecks, killBusy, ledger, ledgerFailure,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
     openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist, loadDecisions, openDecision, closeDecision,
-    loadRisk, engageKillSwitch, clearKillSwitch,
+    loadRisk, engageKillSwitch, clearKillSwitch, loadLedger,
   }
 }
 

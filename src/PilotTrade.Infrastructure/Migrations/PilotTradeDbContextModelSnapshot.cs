@@ -528,6 +528,9 @@ namespace PilotTrade.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Adapter")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("BrokerDealId")
                         .HasColumnType("TEXT");
 
@@ -568,6 +571,12 @@ namespace PilotTrade.Infrastructure.Migrations
                     b.Property<string>("RiskAuthorizationJson")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Side")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("Size")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("State")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -580,7 +589,51 @@ namespace PilotTrade.Infrastructure.Migrations
 
                     b.HasKey("CommandId");
 
+                    b.HasIndex("Environment", "AccountId");
+
                     b.ToTable("OrderJournals");
+                });
+
+            modelBuilder.Entity("PilotTrade.Infrastructure.Persistence.OrderStateTransitionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("AccountId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Adapter")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CommandId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FromState")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("OccurredUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ToState")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CommandId");
+
+                    b.ToTable("OrderStateTransitions");
                 });
 
             modelBuilder.Entity("PilotTrade.Infrastructure.Persistence.WatchlistEntity", b =>

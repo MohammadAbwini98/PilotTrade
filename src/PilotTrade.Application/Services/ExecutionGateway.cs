@@ -66,7 +66,7 @@ public sealed class ExecutionGateway : IExecutionGateway
         var commandId = _ids.NewId("cmd");
         var digest = intent.IntentId; // simplified digest
         var entry = new OrderJournalEntry(commandId, intent.IntentId, _broker.Environment, intent.AccountId, intent.Epic,
-            OrderState.Proposed, digest, intent.SnapshotId, null, null, null, now, null, null, null, now, intent.IntentId);
+            OrderState.Proposed, digest, intent.SnapshotId, null, null, null, now, null, null, null, now, intent.IntentId, intent.Side, intent.Size);
         await _journal.CreateAsync(entry, ct);
 
         // Submit
