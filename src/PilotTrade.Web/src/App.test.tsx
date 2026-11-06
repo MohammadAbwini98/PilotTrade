@@ -22,6 +22,37 @@ const metadata = (epic: string) => ({
 const noOrders = { checkedUtc: '2026-11-04T12:00:00Z', mode: 'Simulation', environment: 'Demo', accountId: 'ACC-A', adapter: 'simulated', executionEnabled: false, liveLocked: true, journalEntries: 0, journalEntriesSentToBroker: 0, journalStates: {}, orderIntents: 0, brokerWriteRequestsSinceStart: null, noOrderSent: true }
 
 const opsStatus = { checkedUtc: '2026-11-04T12:00:00Z', killSwitchEngaged: false, tradingMode: 'MonitorOnly', reconciliationComplete: true, suspensionReason: null, feed: null }
+const metric = (key: string, label: string, current: number | null, limit: number | null, unit: string, provenance: string, note: string, breached: boolean | null = null) =>
+  ({ key, label, current, limit, unit, provenance, utilizationPercent: current !== null && limit ? Math.round(current / limit * 1000) / 10 : null, breached, note })
+const riskView = {
+  checkedUtc: '2026-11-04T12:00:00Z', policySource: 'Built-in defaults', policyEditable: false, accountCurrency: 'USD', brokerSource: 'Simulator', selectedEpic: null,
+  accountFields: [
+    { name: 'Balance', value: 1000, provenance: 'Known', source: 'Simulator', asOfUtc: '2026-11-04T11:59:00Z', note: null },
+    { name: 'Margin used', value: null, provenance: 'Unknown', source: 'Simulator', asOfUtc: '2026-11-04T11:59:00Z', note: 'Not reported by the broker. It is not estimated.' },
+    { name: 'Realized P/L today', value: null, provenance: 'Unknown', source: 'Simulator', asOfUtc: '2026-11-04T11:59:00Z', note: 'Not reported by the broker. It is not estimated.' },
+  ],
+  metrics: [
+    metric('openPositions', 'Open positions', 1, 5, 'count', 'Known', 'Reported by the broker', false),
+    metric('grossExposure', 'Gross exposure of positions', null, 10000, 'USD', 'Unknown', 'A position is in another currency, and no conversion is available'),
+    metric('dailyLoss', 'Loss today', null, 500, 'USD', 'Unknown', 'The broker did not report realized P/L for today; it is not estimated'),
+    metric('slippage', 'Slippage', null, null, '%', 'Unknown', 'No fills exist in this build.'),
+  ],
+  flags: [
+    { key: 'staleData', label: 'Stale market data', raised: true, detail: 'EURUSD quote is 300 s old (Stale)' },
+    { key: 'missingMargin', label: 'Margin data missing', raised: true, detail: 'Margin used is not reported' },
+  ],
+  rules: [
+    { rule: 'Market data freshness', result: 'Veto', reason: 'Quote is stale or the feed is unhealthy', evaluatedUtc: '2026-11-04T12:00:00Z', inputAsOfUtc: '2026-11-04T11:55:00Z' },
+    { rule: 'Daily loss', result: 'Unknown', reason: 'The broker did not report realized P/L for today; it is not estimated', evaluatedUtc: '2026-11-04T12:00:00Z', inputAsOfUtc: null },
+    { rule: 'Concurrent positions', result: 'Pass', reason: '1 within 5', evaluatedUtc: '2026-11-04T12:00:00Z', inputAsOfUtc: null },
+  ],
+  readErrors: [],
+}
+const killOff = { checkedUtc: '2026-11-04T12:00:00Z', engaged: false, reason: null, changedUtc: null, changedBy: null, reconciliation: 'NotCompared', clearChecks: [], clearPhrase: 'CLEAR KILL SWITCH', maxReasonLength: 200 }
+const killOn = {
+  ...killOff, engaged: true, reason: 'Owner: maintenance', changedUtc: '2026-11-04T11:00:00Z', changedBy: 'owner',
+  clearChecks: [{ name: 'Startup reconciliation', passed: true, detail: 'ok' }, { name: 'No open working orders', passed: true, detail: 'none' }],
+}
 
 const emptyWatchlist = { accountId: 'ACC-A', epics: [], version: 0, updatedUtc: null, updatedBy: null }
 const marketPolicy = {
@@ -76,6 +107,8 @@ function defaults(): Record<string, Route> {
     'GET /api/market/policy': { status: 200, body: marketPolicy },
     'GET /api/ai/status': { status: 200, body: aiStatus },
     'GET /api/decisions': { status: 200, body: { total: 0, items: [] } },
+    'GET /api/risk': { status: 200, body: riskView },
+    'GET /api/kill-switch': { status: 200, body: killOff },
   }
 }
 
@@ -577,9 +610,10 @@ describe('control center shell', () => {
       expect(document.querySelector('main')!.textContent).not.toMatch(/\d+\.\d{2}/)
     }
     await goTo(user, 'Risk Center')
-    // The kill switch is shown as the server reports it, read-only; engaging it arrives with task 02-05.
-    expect(screen.getByRole('heading', { level: 2, name: 'Kill switch' }).parentElement!.textContent).toContain('State: Not engaged')
-    expect(screen.queryByRole('button', { name: /kill|enable|live|unlock/i })).toBeNull()
+    // The only kill-switch control is the stop; nothing on the page enables orders, Demo execution or Live trading.
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: 'Kill switch' }).parentElement!.textContent).toContain('State: Not engaged'))
+    expect(screen.queryByRole('button', { name: /enable|live|unlock|arm|demo/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /clear kill switch/i })).toBeNull()
   })
 
   it('names only the allowed AI providers', async () => {
@@ -1091,5 +1125,95 @@ describe('AI decisions (task 02-04)', () => {
     await goTo(again, 'AI Decisions')
     await screen.findByLabelText('No decisions')
     expect(screen.queryByRole('row', { name: 'aidec-late' })).toBeNull()
+  })
+})
+
+describe('risk center (task 02-05)', () => {
+  const killPosts = () => posts().filter(c => c.path.startsWith('/api/kill-switch'))
+
+  it('shows limits with Known and Unknown provenance, and never fills in missing broker fields', async () => {
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    const table = await screen.findByRole('table', { name: 'Risk utilization' })
+    const gross = within(table).getByRole('row', { name: /Gross exposure of positions/ })
+    expect(gross.textContent).toContain('Unknown')
+    expect(gross.textContent).toContain('10000.00 USD')
+    expect(within(table).getByRole('row', { name: /Open positions/ }).textContent).toContain('Known')
+    const fields = screen.getByRole('table', { name: 'Account fields' })
+    const margin = within(fields).getByRole('row', { name: /Margin used/ })
+    expect(margin.textContent).toContain('Not reported by the broker')
+    expect(margin.textContent).not.toMatch(/\d+\.\d{2}/)
+    expect(within(fields).getByRole('row', { name: /Realized P\/L today/ }).textContent).not.toMatch(/\d+\.\d{2}/)
+    expect(within(fields).getByRole('row', { name: /Balance/ }).textContent).toContain('Simulator')
+    const rules = screen.getByRole('table', { name: 'Risk rules' })
+    expect(within(rules).getByRole('row', { name: /Market data freshness/ }).textContent).toContain('Veto')
+    expect(within(rules).getByRole('row', { name: /Daily loss/ }).textContent).toContain('Unknown')
+    expect(screen.getByRole('list', { name: 'Risk flags' }).textContent).toContain('Stale market data')
+    expect(calls.find(c => c.path === '/api/risk')!.url.searchParams.get('accountId')).toBe('ACC-A')
+    expect(posts()).toHaveLength(0)
+  })
+
+  it('engages the kill switch with a reason through the guarded endpoint', async () => {
+    let engaged = false
+    routes['GET /api/kill-switch'] = () => ({ status: 200, body: engaged ? killOn : killOff })
+    routes['POST /api/kill-switch/engage'] = () => { engaged = true; return { status: 200, body: { engaged: true, changed: true, auditRecorded: true, reason: 'Owner: maintenance' } } }
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    const stop = screen.getByRole('button', { name: 'Engage kill switch' })
+    expect((stop as HTMLButtonElement).disabled).toBe(true)
+    await user.type(screen.getByLabelText('Reason for the stop'), 'maintenance')
+    await user.click(stop)
+    await screen.findByText('Kill switch engaged.')
+    const [post] = killPosts()
+    expect(post.path).toBe('/api/kill-switch/engage')
+    expect(post.body).toEqual({ accountId: 'ACC-A', reason: 'maintenance' })
+    expect(post.headers.get('X-PilotTrade-CSRF')).toBe(CSRF)
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: 'Kill switch' }).parentElement!.textContent).toContain('Owner: maintenance'))
+  })
+
+  it('offers the stop even when every other risk read fails', async () => {
+    routes['GET /api/risk'] = { status: 500, body: { error: 'boom' } }
+    routes['GET /api/kill-switch'] = { status: 500, body: { error: 'boom' } }
+    routes['POST /api/kill-switch/engage'] = { status: 200, body: { engaged: true, changed: true, auditRecorded: false } }
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    await screen.findByText(/Risk data could not be loaded/)
+    await user.type(screen.getByLabelText('Reason for the stop'), 'broker down')
+    await user.click(screen.getByRole('button', { name: 'Engage kill switch' }))
+    await screen.findByText(/Kill switch engaged\. The audit log could not record it\./)
+    expect(killPosts()).toHaveLength(1)
+  })
+
+  it('needs the typed phrase to clear, and shows the failed checks when the server refuses', async () => {
+    routes['GET /api/status'] = { status: 200, body: { ...opsStatus, killSwitchEngaged: true } }
+    routes['GET /api/kill-switch'] = { status: 200, body: killOn }
+    routes['POST /api/kill-switch/clear'] = { status: 409, body: { error: 'ClearRefused', engaged: true, checks: [
+      { name: 'Startup reconciliation', passed: true, detail: 'ok' },
+      { name: 'No uncertain broker confirmation', passed: false, detail: '1 journaled orders have no certain broker outcome' },
+    ] } }
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    const clear = await screen.findByRole('button', { name: 'Clear kill switch' })
+    const box = () => screen.getByLabelText(/Type CLEAR KILL SWITCH to clear/)
+    await user.type(box(), 'clear kill switch')
+    expect((clear as HTMLButtonElement).disabled).toBe(true)
+    await user.clear(box())
+    await user.type(box(), 'CLEAR KILL SWITCH')
+    expect((clear as HTMLButtonElement).disabled).toBe(false)
+    await user.click(clear)
+    await screen.findByText(/The clear was refused/)
+    expect(screen.getByRole('list', { name: 'Checks before a clear' }).textContent).toContain('Fail: No uncertain broker confirmation')
+    expect(killPosts().map(c => c.body)).toEqual([{ accountId: 'ACC-A', confirmation: 'CLEAR KILL SWITCH' }])
+    expect(killPosts()[0].headers.get('X-PilotTrade-CSRF')).toBe(CSRF)
+    expect(screen.getByRole('heading', { level: 2, name: 'Kill switch' }).parentElement!.textContent).toContain('Engaged')
+  })
+
+  it('reports a stop that could not be saved', async () => {
+    routes['POST /api/kill-switch/engage'] = { status: 500, body: { error: 'KillSwitchNotPersisted', engaged: true } }
+    const user = await connect()
+    await goTo(user, 'Risk Center')
+    await user.type(screen.getByLabelText('Reason for the stop'), 'disk full')
+    await user.click(screen.getByRole('button', { name: 'Engage kill switch' }))
+    await screen.findByText(/could not be saved, so it would not survive a restart/)
   })
 })

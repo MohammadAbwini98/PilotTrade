@@ -302,8 +302,17 @@ namespace PilotTrade.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("KillSwitchChangedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("KillSwitchChangedUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<bool>("KillSwitchEngaged")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("KillSwitchReason")
+                        .HasColumnType("TEXT");
 
                     b.Property<bool>("LiveArmed")
                         .HasColumnType("INTEGER");

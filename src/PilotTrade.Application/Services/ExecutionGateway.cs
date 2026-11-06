@@ -138,7 +138,7 @@ public sealed class ExecutionGateway : IExecutionGateway
 
     private void Suspend(string reason)
     {
-        _control.EngageKillSwitch();
+        _control.EngageKillSwitch(reason, "system");
         _control.State.SuspensionReason = reason;
     }
 

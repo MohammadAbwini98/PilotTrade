@@ -67,6 +67,25 @@ export type AiStatus = {
   providers: { name: string; registered: boolean; credentialPresent: boolean }[]
 }
 export type OperationsStatus = {
-  checkedUtc: string; killSwitchEngaged: boolean; tradingMode: string; reconciliationComplete: boolean; suspensionReason: string | null
+  checkedUtc: string; killSwitchEngaged: boolean; tradingMode: string; reconciliationComplete: boolean; suspensionReason: string | null; killSwitchReason?: string | null
   feed: { epic: string; health: FeedHealth; lastQuoteUtc: string | null } | null
+}
+
+// Task 02-05. Known: reported by the broker. Derived: computed on the server from known values only. Unknown: a needed value is missing.
+export type RiskProvenance = 'Known' | 'Derived' | 'Unknown'
+export type RiskField = { name: string; value: number | null; provenance: RiskProvenance; source: string; asOfUtc: string | null; note: string | null }
+export type RiskMetric = {
+  key: string; label: string; current: number | null; limit: number | null; unit: string; provenance: RiskProvenance
+  utilizationPercent: number | null; breached: boolean | null; note: string
+}
+export type RiskFlag = { key: string; label: string; raised: boolean | null; detail: string }
+export type RiskRule = { rule: string; result: 'Pass' | 'Veto' | 'Unknown'; reason: string; evaluatedUtc: string; inputAsOfUtc: string | null }
+export type RiskView = {
+  checkedUtc: string; policySource: string; policyEditable: boolean; accountCurrency: string | null; brokerSource: string; selectedEpic: string | null
+  accountFields: RiskField[]; metrics: RiskMetric[]; flags: RiskFlag[]; rules: RiskRule[]; readErrors: string[]
+}
+export type ClearCheck = { name: string; passed: boolean; detail: string }
+export type KillSwitchState = {
+  checkedUtc: string; engaged: boolean; reason: string | null; changedUtc: string | null; changedBy: string | null; reconciliation: string
+  clearChecks: ClearCheck[]; clearPhrase: string; maxReasonLength: number
 }

@@ -13,7 +13,8 @@ public sealed class EfPersistedExecutionState : IPersistedExecutionState
     {
         var e = await _db.ExecutionStates.FirstOrDefaultAsync(x => x.Environment == env.ToString() && x.AccountId == accountId, ct);
         if (e is null) return null;
-        return new PersistedExecutionState(env, accountId, e.KillSwitchEngaged, Enum.Parse<TradingMode>(e.Mode), e.LiveArmed, e.LiveArmedUntilUtc, e.SuspensionReason, e.UpdatedUtc);
+        return new PersistedExecutionState(env, accountId, e.KillSwitchEngaged, Enum.Parse<TradingMode>(e.Mode), e.LiveArmed, e.LiveArmedUntilUtc, e.SuspensionReason, e.UpdatedUtc,
+            e.KillSwitchReason, e.KillSwitchChangedUtc, e.KillSwitchChangedBy);
     }
 
     public async Task SaveAsync(PersistedExecutionState state, CancellationToken ct)
@@ -29,6 +30,9 @@ public sealed class EfPersistedExecutionState : IPersistedExecutionState
         e.LiveArmedUntilUtc = state.LiveArmedUntilUtc;
         e.SuspensionReason = state.SuspensionReason;
         e.UpdatedUtc = state.UpdatedUtc;
+        e.KillSwitchReason = state.KillSwitchReason;
+        e.KillSwitchChangedUtc = state.KillSwitchChangedUtc;
+        e.KillSwitchChangedBy = state.KillSwitchChangedBy;
         await _db.SaveChangesAsync(ct);
     }
 }

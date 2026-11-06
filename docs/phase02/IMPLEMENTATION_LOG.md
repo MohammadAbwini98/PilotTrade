@@ -326,3 +326,62 @@ New frontend tests:
 - A list reply that arrives after disconnect is dropped.
 
 Recommendation: **PARTIAL**. The code, local checks and Windows CI (run 42279387387 on `d961372`) pass. Still open: the owner's visual check, and runtime wiring in the execution-readiness phase.
+
+## 02-05: Risk Center and kill switch
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Domain/Risk/RiskPolicyDefaults.cs` | The built-in limits the Risk Center measures against. They are read-only here; editing them is task 02-09. No order path uses them yet. |
+| `src/PilotTrade.Domain/Execution/PersistedExecutionState.cs`, `src/PilotTrade.Infrastructure/Persistence/Entities.cs`, `EfPersistedExecutionState.cs` | The kill switch keeps its reason, the time it changed and who changed it. |
+| `src/PilotTrade.Infrastructure/Migrations/20261106194204_AddKillSwitchReason*.cs`, `PilotTradeDbContextModelSnapshot.cs` | **Migration:** adds three nullable text columns to `ExecutionStates`. It only adds. |
+| `src/PilotTrade.Application/Controls/TradingControl.cs`, `PersistedTradingControl.cs` | Engage and clear take a reason and an author. The first reason is kept on a repeated engage. A version number lets a clear detect an engage that happened while its checks ran. If the save fails, the in-memory state is rolled back for a clear, and kept engaged (with an error) for an engage. The startup reconciliation records its outcome. |
+| `src/PilotTrade.Application/Services/OrderReconciliationService.cs`, `ExecutionGateway.cs` | Record the reconciliation outcome and pass the reason when they engage the kill switch. |
+| `src/PilotTrade.Application/Controls/KillSwitchService.cs` | **Engage:** needs only a reason (1 to 200 characters) and never waits for the broker or the audit log. **Clear:** needs the phrase `CLEAR KILL SWITCH` and these server-side checks: the kill switch is engaged, the startup reconciliation did not fail, no journaled order has an uncertain broker outcome, the broker account matches the configured one, and there are no open working orders. A check that cannot be read fails. Every engage, clear and refusal is audited under Category `KillSwitch` (Action `Engaged`, `EngageRepeated`, `Cleared` or `ClearRefused`). |
+| `src/PilotTrade.Application/Services/RiskMonitorService.cs` | Builds the read-only risk view. Each broker read is separate: a failure is listed in `readErrors` and makes the affected values Unknown. Each account field and metric says whether it is Known, Derived or Unknown, and where it came from. Missing `marginUsed` and `realizedPnLToday` stay Unknown, never estimated. Exposure is size times the larger of the open and current level, so it is never understated. A missing level, a missing currency or a currency other than the account currency makes the whole total Unknown, not a partial sum. Data from another account is dropped. Slippage is always Unknown, since no fills exist. |
+| `src/PilotTrade.Api/Program.cs` | **API change:**<br>• `GET /api/risk?accountId=`: the risk view<br>• `GET /api/kill-switch?accountId=`: state, reason, time, author, reconciliation outcome, and the clear checks while engaged<br>• `POST /api/kill-switch/engage` `{accountId, reason}`: 200, 400 `InvalidReason`, or 500 `KillSwitchNotPersisted`<br>• `POST /api/kill-switch/clear` `{accountId, confirmation}`: 200, 400 `ConfirmationMismatch`, 409 `ClearRefused` with the checks, or 500 `KillSwitchNotPersisted`<br>All four need the owner token and the configured account. The two writes also need CSRF and Origin. `GET /api/status` also returns `killSwitchReason`. |
+| `tests/PilotTrade.UnitTests/RiskCenterTests.cs`, `SafetyTests.cs` | 30 new unit tests (below). |
+| `tests/PilotTrade.IntegrationTests/KillSwitchEndpointTests.cs` | 6 new integration tests (below). |
+| `src/PilotTrade.Web/src/types/api.ts`, `hooks/useOwnerSession.ts` | Risk and kill-switch types and state. The risk view and the kill-switch state are read separately, so one failing never hides the other. The engage and clear outcome is kept apart from read failures, so a later read cannot hide a refusal. |
+| `src/PilotTrade.Web/src/features/risk/RiskPage.tsx` | **Kill switch panel**, first on the page: state, reason, time, author and reconciliation outcome. The engage form is always shown. While engaged, the clear form shows the checks and enables its button only once the phrase is typed exactly.<br>**Execution guards** as reported by the server.<br>**Limits and utilization** with provenance badges, then the account fields with source and time, the flags, and the rules with result, reason, check time and data time. |
+| `src/PilotTrade.Web/src/App.test.tsx` | 5 new tests (below); the old Risk Center assertion now allows the stop but no enable, live, unlock, arm or Demo control. |
+| `src/PilotTrade.Api/wwwroot/*` | rebuilt asset `index-BUisuwy6.js`; the old `index-TmWzEAIe.js` is removed |
+
+There is no Enable Live button and no control that turns on Capital.com Demo execution. Clearing the kill switch enables nothing: an integration test checks that `executionEnabled` stays false and `liveLocked` stays true after a clear. No order request reaches the broker in any test.
+
+### Acceptance
+
+- **Stop works when other modules fail:** the engage needs only the account and a reason. An integration test engages with every broker read failing. A frontend test engages while both risk reads return 500.
+- **Persists across restart:** an integration test engages, restarts the host on the same database, and reads the same reason, author and time.
+- **Reset cannot bypass safety gates:** a clear is refused (409) for a failed or unconfirmed reconciliation, an uncertain broker outcome, open working orders, a mismatched account, or a broker that cannot be read. The phrase is checked on the server too. An engage during the checks makes the clear fail.
+- **Known, Derived or Unknown, never understated:** unit tests cover a missing level, a missing currency, another currency, missing margin and missing realized P/L.
+
+### Migration, restart, backup and rollback
+
+- The `AddKillSwitchReason` migration runs at startup and only adds nullable columns. **Restart the API** after updating to apply it. An existing engaged kill switch stays engaged, with no reason recorded.
+- Back up first: stop the API, then run `scripts/backup-data.ps1`.
+- Rollback: stop the API, restore the backup, and run the previous build. The previous build also runs on the new database, since it ignores the extra columns. It keeps the engaged state but cannot show the reason, and it has no clear endpoint.
+
+### Limits
+
+- The limits are built-in defaults and cannot be edited yet (task 02-09).
+- Rules for a specific order run only when an order is proposed, and order submission is disabled in this build. The page shows the account-level rules.
+- Slippage is always Unknown, since no fills exist.
+- Not checked: the owner's visual check, a real Demo account, and Windows CI on this commit.
+
+### Results after 02-05
+
+| Check | Result |
+|---|---|
+| `npx vitest run` | 74/74 passed (69 earlier + 5 new) |
+| `npx tsc --noEmit`, `npm run lint` | clean |
+| `npm run build` | new `wwwroot` asset, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 168/168 (30 new); integration 258 passed, 3 skipped, 0 failed (261; 6 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
+| `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
+| `scripts/secret-scan.ps1` | no findings in 212 files (run after staging) |
+
+New tests cover these failure cases from the task: stale quote, missing risk data, open working orders, mismatched account and uncertain broker confirmation. They also cover reconciliation outcomes, reason and phrase validation, an audit failure, a save failure, the guards (owner, account, CSRF) and persistence across restart.
+
+Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI on this commit and the owner's visual check.

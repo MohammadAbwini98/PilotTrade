@@ -82,7 +82,19 @@ public class FakeClock : IClock
 public class TestTradingControl : ITradingControl
 {
     public TradingControlState State { get; } = new();
-    public void EngageKillSwitch() => State.KillSwitchEngaged = true;
+    public void EngageKillSwitch() => EngageKillSwitch("Kill switch engaged", "system");
+    public bool EngageKillSwitch(string reason, string actor)
+    {
+        if (State.KillSwitchEngaged) return false;
+        State.KillSwitchEngaged = true; State.KillSwitchReason = reason; State.KillSwitchChangedBy = actor; State.KillSwitchVersion++;
+        return true;
+    }
+    public bool ClearKillSwitch(string actor, long expectedVersion)
+    {
+        if (!State.KillSwitchEngaged || State.KillSwitchVersion != expectedVersion) return false;
+        State.KillSwitchEngaged = false; State.KillSwitchChangedBy = actor; State.KillSwitchVersion++;
+        return true;
+    }
     public void DisarmLive() { State.LiveArmed = false; State.LiveArmedUntilUtc = null; }
 }
 

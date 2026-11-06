@@ -153,6 +153,9 @@ public class ExecutionStateEntity
     public DateTimeOffset? LiveArmedUntilUtc { get; set; }
     public string? SuspensionReason { get; set; }
     public DateTimeOffset UpdatedUtc { get; set; }
+    public string? KillSwitchReason { get; set; }
+    public DateTimeOffset? KillSwitchChangedUtc { get; set; }
+    public string? KillSwitchChangedBy { get; set; }
 }
 public class WatchlistEntity
 {

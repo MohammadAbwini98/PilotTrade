@@ -79,6 +79,8 @@ builder.Services.AddSingleton<IAuditLogger, EfAuditLogger>();
 // The default HttpClient logging records request URLs, which have no place in this app's logs.
 builder.Services.AddHttpClient("capital", c => c.Timeout = TimeSpan.FromSeconds(20)).RemoveAllLoggers();
 builder.Services.AddSingleton<OrderReconciliationService>();
+builder.Services.AddSingleton<KillSwitchService>();
+builder.Services.AddSingleton<RiskMonitorService>();
 builder.Services.AddHostedService<StartupReconciliationService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
@@ -380,9 +382,63 @@ api.MapGet("/status", (string accountId, BrokerRuntimeOptions options, ITradingC
         tradingMode = state.Mode.ToString(),
         reconciliationComplete = state.ReconciliationComplete,
         suspensionReason = state.SuspensionReason,
+        killSwitchReason = state.KillSwitchReason,
         // Feed health is only known for the selected instrument, and only once a quote has been requested for it.
         feed = selected is null ? null : new { epic = selected.Epic, health = mds.GetFeedHealth(selected.Epic).ToString(), lastQuoteUtc = mds.LastQuoteUtc(selected.Epic) }
     });
+});
+
+// Task 02-05: read-only risk utilization against the built-in limits. A value the broker did not supply is reported as Unknown.
+api.MapGet("/risk", async (string accountId, BrokerRuntimeOptions options, RiskMonitorService risk, IInstrumentSelectionService selections, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var source = options.Mode == BrokerMode.CapitalDemo ? "Capital.com Demo (read-only)" : "Simulator";
+    return Results.Ok(await risk.BuildAsync(options.Environment, accountId, selections.Current(accountId, options.Environment)?.Epic, source, ct));
+});
+
+// Task 02-05: the persisted kill-switch state, and the checks a clear would have to pass now. Reading it changes nothing.
+api.MapGet("/kill-switch", async (string accountId, BrokerRuntimeOptions options, ITradingControl control, KillSwitchService ks, IClock clock, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var s = control.State;
+    return Results.Ok(new
+    {
+        checkedUtc = clock.UtcNow,
+        engaged = s.KillSwitchEngaged,
+        reason = s.KillSwitchReason,
+        changedUtc = s.KillSwitchChangedUtc,
+        changedBy = s.KillSwitchChangedBy,
+        reconciliation = s.Reconciliation.ToString(),
+        clearChecks = s.KillSwitchEngaged ? await ks.CheckAsync(options.Environment, accountId, ct) : Array.Empty<ClearCheck>(),
+        clearPhrase = KillSwitchService.ClearPhrase,
+        maxReasonLength = KillSwitchService.MaxReasonLength
+    });
+});
+
+// The emergency stop. It touches neither the broker nor the risk view, so it works when they fail.
+guarded.MapPost("/kill-switch/engage", async (KillSwitchEngageRequest req, BrokerRuntimeOptions options, ITradingControl control, KillSwitchService ks, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, req.AccountId) is { } refused) return refused;
+    if (KillSwitchService.ReasonProblem(req.Reason) is { } problem) return Results.BadRequest(new { error = "InvalidReason", detail = problem });
+    try
+    {
+        var outcome = await ks.EngageAsync(options.Environment, req.AccountId, req.Reason!, ct);
+        return Results.Ok(new { engaged = true, changed = outcome.Changed, auditRecorded = outcome.AuditRecorded, reason = control.State.KillSwitchReason });
+    }
+    // The switch is engaged in memory, so new entries stay blocked in this process, but it would not survive a restart.
+    catch (Exception) { return Results.Json(new { error = "KillSwitchNotPersisted", engaged = control.State.KillSwitchEngaged }, statusCode: StatusCodes.Status500InternalServerError); }
+});
+
+// Clearing needs the typed phrase and every server-side check. It enables nothing: Demo order submission stays disabled and Live stays locked.
+guarded.MapPost("/kill-switch/clear", async (KillSwitchClearRequest req, BrokerRuntimeOptions options, ITradingControl control, KillSwitchService ks, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, req.AccountId) is { } refused) return refused;
+    ClearOutcome outcome;
+    try { outcome = await ks.ClearAsync(options.Environment, req.AccountId, req.Confirmation, ct); }
+    catch (Exception) { return Results.Json(new { error = "KillSwitchNotPersisted", engaged = control.State.KillSwitchEngaged }, statusCode: StatusCodes.Status500InternalServerError); }
+    if (!outcome.ConfirmationAccepted) return Results.BadRequest(new { error = "ConfirmationMismatch", detail = $"Type {KillSwitchService.ClearPhrase} to clear the kill switch" });
+    if (!outcome.Cleared) return Results.Json(new { error = "ClearRefused", engaged = control.State.KillSwitchEngaged, checks = outcome.Checks, auditRecorded = outcome.AuditRecorded }, statusCode: StatusCodes.Status409Conflict);
+    return Results.Ok(new { engaged = false, checks = outcome.Checks, auditRecorded = outcome.AuditRecorded });
 });
 
 app.Run();
@@ -393,3 +449,5 @@ public record WatchlistSaveRequest(string AccountId, string[]? Epics, int Expect
 public record CredentialSetupRequest(string ApiKey, string ApiPassword, string Identifier, bool Replace = false);
 
 public partial class Program { }
+public record KillSwitchEngageRequest(string AccountId, string? Reason);
+public record KillSwitchClearRequest(string AccountId, string? Confirmation);

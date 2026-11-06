@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, AiStatus, CredentialStatus, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
+  Account, AccountSummary, AiStatus, ClearCheck, CredentialStatus, KillSwitchState, RiskView, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
   Position, ProbeEvidence, Runtime, Selection, SnapshotResult, Watchlist, WorkingOrder,
 } from '../types/api'
 
@@ -57,6 +57,16 @@ export function useOwnerSession() {
   const [decision, setDecision] = useState<DecisionRecord | null>(null)
   // Bumped on account change, disconnect and every decision read, so only the newest reply for the current account lands.
   const decisionGeneration = useRef(0)
+  // Task 02-05. The kill switch keeps its own error and busy state, so a failure elsewhere on the page never hides or blocks the stop.
+  const [risk, setRisk] = useState<RiskView | null>(null)
+  const [riskFailure, setRiskFailure] = useState('')
+  const [killSwitch, setKillSwitch] = useState<KillSwitchState | null>(null)
+  const [killFailure, setKillFailure] = useState('')
+  const [killReadFailure, setKillReadFailure] = useState('')
+  const [killMessage, setKillMessage] = useState('')
+  const [refusedChecks, setRefusedChecks] = useState<ClearCheck[] | null>(null)
+  const [killBusy, setKillBusy] = useState(false)
+  const riskGeneration = useRef(0)
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
@@ -138,6 +148,8 @@ export function useOwnerSession() {
     setWatch(null)
     decisionGeneration.current++
     setAiStatus(null); setDecisions(null); setDecision(null)
+    riskGeneration.current++
+    setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
     setAccountId(id)
     accountRef.current = id
     setSelection(null)
@@ -173,6 +185,8 @@ export function useOwnerSession() {
     setWatchlist(null); setWatch(null); setPolicy(null)
     decisionGeneration.current++
     setAiStatus(null); setDecisions(null); setDecision(null)
+    riskGeneration.current++
+    setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
     ownerToken.current = ''
     accountRef.current = ''
     setStatus(null); setStatusFailed(false); setUpdateFailure(null)
@@ -296,6 +310,61 @@ export function useOwnerSession() {
 
   const closeDecision = () => { decisionGeneration.current++; setDecision(null) }
 
+  const message = (e: unknown) => {
+    if (!(e instanceof ApiError)) return 'The request could not be completed.'
+    const detail = (e.body as { detail?: string } | null)?.detail
+    if (detail) return detail
+    if (e.message.includes('KillSwitchNotPersisted')) return 'The kill switch is engaged in the running server but could not be saved, so it would not survive a restart.'
+    return e.message
+  }
+
+  // Read-only. The risk view and the kill-switch state are read separately, so one failing never hides the other.
+  const loadRisk = async () => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++riskGeneration.current
+    const [r, k] = await Promise.allSettled([
+      api.get<RiskView>(`/api/risk?accountId=${q(id)}`),
+      api.get<KillSwitchState>(`/api/kill-switch?accountId=${q(id)}`),
+    ])
+    if (current !== riskGeneration.current || id !== accountRef.current) return
+    if (r.status === 'fulfilled') { setRisk(r.value); setRiskFailure('') } else setRiskFailure(message(r.reason))
+    // A read failure is kept apart from the outcome of an engage or clear, so a later successful read never hides a refusal.
+    if (k.status === 'fulfilled') { setKillSwitch(k.value); setKillReadFailure('') } else setKillReadFailure(message(k.reason))
+  }
+
+  // The stop needs only the account id and a reason; it does not wait for, or depend on, any other read on the page.
+  const engageKillSwitch = async (reason: string) => {
+    const id = accountRef.current
+    if (!id || killBusy) return
+    setKillBusy(true); setKillFailure(''); setKillMessage(''); setRefusedChecks(null)
+    try {
+      const r = await api.post<{ changed: boolean; auditRecorded: boolean }>('/api/kill-switch/engage', { accountId: id, reason })
+      setKillMessage(`${r.changed ? 'Kill switch engaged.' : 'The kill switch was already engaged; its first reason is kept.'}${r.auditRecorded ? '' : ' The audit log could not record it.'}`)
+    } catch (e) { setKillFailure(message(e)) }
+    finally { setKillBusy(false) }
+    await loadRisk().catch(() => {})
+    await reloadStatus(id).catch(() => {})
+  }
+
+  // Clearing enables nothing. The server runs every safety check and refuses the clear if any fails.
+  const clearKillSwitch = async (confirmation: string) => {
+    const id = accountRef.current
+    if (!id || killBusy) return
+    setKillBusy(true); setKillFailure(''); setKillMessage(''); setRefusedChecks(null)
+    try {
+      await api.post('/api/kill-switch/clear', { accountId: id, confirmation })
+      setKillMessage('Kill switch cleared. Demo order submission stays disabled and Live stays locked.')
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setRefusedChecks((e.body as { checks?: ClearCheck[] } | null)?.checks ?? [])
+        setKillFailure('The clear was refused: a safety check failed. The kill switch stays engaged.')
+      } else setKillFailure(message(e))
+    } finally { setKillBusy(false) }
+    await loadRisk().catch(() => {})
+    await reloadStatus(id).catch(() => {})
+  }
+
   const checkNoOrders = () => guard(async () => {
     const current = generation.current
     const r = await api.get<NoOrderEvidence>(`/api/evidence/no-orders?accountId=${q(accountId)}`)
@@ -309,8 +378,10 @@ export function useOwnerSession() {
   return {
     runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
     snapshot, evidence, noOrders, credentials, watchlist, watch, policy, aiStatus, decisions, decision, busy: busy > 0, err,
+    risk, riskFailure, killSwitch, killFailure, killReadFailure, killMessage, refusedChecks, killBusy,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
     openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist, loadDecisions, openDecision, closeDecision,
+    loadRisk, engageKillSwitch, clearKillSwitch,
   }
 }
 

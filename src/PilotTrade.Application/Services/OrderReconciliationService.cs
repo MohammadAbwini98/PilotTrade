@@ -69,6 +69,7 @@ public sealed class OrderReconciliationService
     public async Task RunStartupAsync(ITradingControl control, TradingEnvironment env, string accountId, CancellationToken ct)
     {
         control.State.ReconciliationComplete = false;
+        control.State.Reconciliation = ReconciliationOutcome.NotRun;
         try
         {
             var orders = await ReconcileAsync(env, accountId, ct);
@@ -76,28 +77,38 @@ public sealed class OrderReconciliationService
             if (orders.StillUncertain == 0 && !_broker.ExecutionEnabled)
             {
                 control.State.SuspensionReason = "Broker holdings are not compared while execution is disabled";
+                control.State.Reconciliation = ReconciliationOutcome.NotCompared;
                 return;
             }
             var held = orders.StillUncertain > 0 ? null : await CompareWithBrokerAsync(env, accountId, ct);
             var uncertain = orders.StillUncertain + (held?.StillUncertain ?? 0);
             if (uncertain > 0)
             {
-                control.EngageKillSwitch();
-                control.State.SuspensionReason = $"Startup: {uncertain} uncertain orders require reconciliation";
+                var reason = $"Startup: {uncertain} uncertain orders require reconciliation";
+                control.State.Reconciliation = ReconciliationOutcome.Uncertain;
+                control.EngageKillSwitch(reason, "system");
+                control.State.SuspensionReason = reason;
             }
             else if (held!.UnknownAtBroker > 0 || held.MissingAtBroker > 0)
             {
                 control.State.SuspensionReason = $"Startup: {held.UnknownAtBroker} broker items are not in the journal, {held.MissingAtBroker} journaled deals are not at the broker";
+                control.State.Reconciliation = ReconciliationOutcome.Mismatch;
             }
-            else control.State.ReconciliationComplete = true;
+            else
+            {
+                control.State.ReconciliationComplete = true;
+                control.State.Reconciliation = ReconciliationOutcome.Complete;
+            }
         }
         catch (BrokerException e) when (e.Kind == BrokerErrorKind.CredentialsMissing)
         {
             control.State.SuspensionReason = "Startup reconciliation needs broker credentials";
+            control.State.Reconciliation = ReconciliationOutcome.CredentialsMissing;
         }
         catch
         {
-            control.EngageKillSwitch();
+            control.State.Reconciliation = ReconciliationOutcome.Failed;
+            control.EngageKillSwitch("Startup reconciliation failed", "system");
             control.State.SuspensionReason = "Startup reconciliation failed";
         }
     }
