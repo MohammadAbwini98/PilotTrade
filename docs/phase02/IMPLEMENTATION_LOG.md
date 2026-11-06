@@ -312,7 +312,7 @@ No order path was added. A BUY or SELL candidate is labeled as not an order. The
 | `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
 | `scripts/secret-scan.ps1` | no findings in 205 files (after the fix below) |
 | CI on `22cc860` | **failed** (run 42278141243): the secret scan flagged the fake keys planted in the two new test files |
-| CI on the fix | not run yet: CI needs a push, and a push needs the owner's approval |
+| CI on `d961372` (the fix) | **passed** (run 42279387387) |
 
 The first local scan reported no findings because it reads only files tracked by git, and the new test files were not yet staged. The fix splits each fake key in the source (`"sk-" + "ant-..."`). The runtime value is unchanged, so the no-leak tests still check a credential-shaped string. Lesson: run the secret scan after staging.
 
@@ -325,4 +325,4 @@ New frontend tests:
 - A stored BUY whose steps did not both succeed shows as NO_TRADE.
 - A list reply that arrives after disconnect is dropped.
 
-Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI, the owner's visual check, and runtime wiring in the execution-readiness phase.
+Recommendation: **PARTIAL**. The code, local checks and Windows CI (run 42279387387 on `d961372`) pass. Still open: the owner's visual check, and runtime wiring in the execution-readiness phase.
