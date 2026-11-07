@@ -28,10 +28,15 @@ public sealed class EfOrderLedgerReader : IOrderLedgerReader
                 || (x.BrokerDealReference != null && x.BrokerDealReference.Contains(t)) || (x.BrokerDealId != null && x.BrokerDealId.Contains(t)));
         }
 
-        // SQLite cannot order by a DateTimeOffset column, so the filtered rows are ordered and paged here.
-        var all = await rows.ToListAsync(ct);
-        var page = all.OrderByDescending(x => x.CreatedUtc).ThenBy(x => x.CommandId, StringComparer.Ordinal)
-            .Skip(query.Offset).Take(query.Limit).ToList();
+        // The environment, account and filters run in SQL. SQLite cannot order by a DateTimeOffset column, so only the key and
+        // creation time of the matching rows are read to order them; full rows are then read for the requested page alone.
+        var keys0 = await rows.Select(x => new { x.CommandId, x.CreatedUtc }).ToListAsync(ct);
+        var pageIds = keys0.OrderByDescending(x => x.CreatedUtc).ThenBy(x => x.CommandId, StringComparer.Ordinal)
+            .Skip(query.Offset).Take(query.Limit).Select(x => x.CommandId).ToList();
+        var pageRows = pageIds.Count == 0 ? new List<OrderJournalEntity>()
+            : await db.OrderJournals.AsNoTracking().Where(x => x.Environment == env && x.AccountId == accountId && pageIds.Contains(x.CommandId)).ToListAsync(ct);
+        var byId = pageRows.ToDictionary(x => x.CommandId, StringComparer.Ordinal);
+        var page = pageIds.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
 
         var ids = page.Select(x => x.CommandId).ToList();
         var transitions = (await db.OrderStateTransitions.AsNoTracking()
@@ -51,10 +56,14 @@ public sealed class EfOrderLedgerReader : IOrderLedgerReader
 
         var confirmRows = db.OrderJournals.AsNoTracking().Where(x => x.Environment == env && x.AccountId == accountId && x.BrokerDealReference != null);
         if (!string.IsNullOrWhiteSpace(query.Epic)) confirmRows = confirmRows.Where(x => x.Epic == query.Epic);
-        var confirms = (await confirmRows.ToListAsync(ct)).OrderByDescending(x => x.UpdatedUtc).Take(maxConfirms)
-            .Select(e => new LedgerRow(ToEntry(e), e.Adapter)).ToList();
+        var confirmKeys = await confirmRows.Select(x => new { x.CommandId, x.UpdatedUtc }).ToListAsync(ct);
+        var confirmIds = confirmKeys.OrderByDescending(x => x.UpdatedUtc).ThenBy(x => x.CommandId, StringComparer.Ordinal).Take(maxConfirms).Select(x => x.CommandId).ToList();
+        var confirmById = confirmIds.Count == 0 ? new Dictionary<string, OrderJournalEntity>()
+            : (await db.OrderJournals.AsNoTracking().Where(x => x.Environment == env && x.AccountId == accountId && confirmIds.Contains(x.CommandId)).ToListAsync(ct))
+                .ToDictionary(x => x.CommandId, StringComparer.Ordinal);
+        var confirms = confirmIds.Where(confirmById.ContainsKey).Select(id => new LedgerRow(ToEntry(confirmById[id]), confirmById[id].Adapter)).ToList();
 
-        return new LedgerPage(all.Count, page.Select(e => new LedgerRow(ToEntry(e), e.Adapter)).ToList(), transitions, audit, confirms);
+        return new LedgerPage(keys0.Count, page.Select(e => new LedgerRow(ToEntry(e), e.Adapter)).ToList(), transitions, audit, confirms);
     }
 
     private static OrderJournalEntry ToEntry(OrderJournalEntity e) => new(

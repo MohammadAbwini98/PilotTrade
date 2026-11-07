@@ -104,6 +104,31 @@ public class OrderLedgerTests
         OrderLedgerService.Reconcile(Row(OrderState.Confirmed, "deal-A-0001", "Simulation"), held).Detail.Should().Contain("not a Capital.com confirmation");
     }
 
+    [Theory]
+    [InlineData(BrokerMode.Simulation, true, "Simulation", true, false, "Simulated fills only. No Capital.com orders are sent.")]
+    [InlineData(BrokerMode.Simulation, false, "Simulation", false, false, "Simulated execution disabled. No Capital.com orders are sent.")]
+    [InlineData(BrokerMode.CapitalDemo, false, "Capital.com Demo", false, false, "Capital.com Demo order submission disabled (read-only)")]
+    public void RuntimeLabels_NeverCallSimulatedFillsBrokerPermission(BrokerMode mode, bool adapterExecution, string label, bool simulated, bool broker, string text)
+    {
+        RuntimeLabels.Mode(mode).Should().Be(label);
+        RuntimeLabels.SimulatedExecution(mode, adapterExecution).Should().Be(simulated);
+        RuntimeLabels.BrokerExecutionEnabled(mode, adapterExecution).Should().Be(broker);
+        RuntimeLabels.Execution(mode, adapterExecution).Should().Be(text);
+        RuntimeLabels.Live.Should().Be("Live locked");
+    }
+
+    [Fact]
+    public async Task SimulationMode_ReportsSimulatedFills_NotBrokerPermission()
+    {
+        var sim = new PilotTrade.Infrastructure.Broker.SimulatedBrokerAdapter(TradingEnvironment.Demo, new FakeClock(Now), new GuidIdGenerator());
+        var v = await new OrderLedgerService(_reader, _journal, sim, _control, new BrokerRuntimeOptions(BrokerMode.Simulation, TradingEnvironment.Demo, "ACC-A"), new FakeClock(Now))
+            .BuildAsync("ACC-A", new LedgerQuery(null, null, null, 0, 25), CancellationToken.None);
+        v.RuntimeMode.Should().Be("Simulation");
+        v.SimulatedExecution.Should().BeTrue();
+        v.BrokerExecutionEnabled.Should().BeFalse();
+        v.Execution.Should().Contain("No Capital.com orders are sent");
+    }
+
     [Fact]
     public async Task EmptyJournal_ShowsNoOrders_AndInventsNothing()
     {
@@ -114,7 +139,10 @@ public class OrderLedgerTests
         v.Confirms.Should().BeEmpty();
         v.Positions.Should().BeEmpty();
         v.Alerts.Should().BeEmpty();
-        v.ExecutionEnabled.Should().BeFalse();
+        v.BrokerExecutionEnabled.Should().BeFalse();
+        v.SimulatedExecution.Should().BeFalse();
+        v.Execution.Should().Be("Capital.com Demo order submission disabled (read-only)");
+        v.Live.Should().Be("Live locked");
         _broker.OrderCalls.Should().Be(0);
     }
 

@@ -51,7 +51,10 @@ public sealed class LedgerEndpointTests : IDisposable
         var v = await Ledger(await host.OwnerClientAsync(), "accountId=ACC-A");
         v.GetProperty("journalTotal").GetInt32().Should().Be(0);
         v.GetProperty("journal").GetProperty("items").GetArrayLength().Should().Be(0);
-        v.GetProperty("executionEnabled").GetBoolean().Should().BeFalse();
+        v.TryGetProperty("executionEnabled", out _).Should().BeFalse();
+        v.GetProperty("brokerExecutionEnabled").GetBoolean().Should().BeFalse();
+        v.GetProperty("runtimeMode").GetString().Should().Be("Capital.com Demo");
+        v.GetProperty("execution").GetString().Should().Be("Capital.com Demo order submission disabled (read-only)");
         var position = v.GetProperty("positions").EnumerateArray().Single();
         position.GetProperty("provenance").GetString().Should().Be("Broker-observed (Capital.com Demo, read-only)");
         position.GetProperty("inJournal").GetBoolean().Should().BeFalse();
@@ -83,7 +86,7 @@ public sealed class LedgerEndpointTests : IDisposable
         await second.StoreDemoCredentialsAsync();
         var response = await (await second.OwnerClientAsync()).GetAsync("/api/ledger?accountId=ACC-A");
         var raw = await response.Content.ReadAsStringAsync();
-        foreach (var hidden in new[] { "cmd_u_secret_0001", "intent_u_secret_0002", "ref-protected-9999", "brokerDealReference", "TEST-KEY", "riskAuthorization" })
+        foreach (var hidden in new[] { "cmd_u_secret_0001", "intent_u_secret_0002", "ref-protected-9999", "brokerDealReference", "TEST-KEY", "riskAuthorization", "audit-ledger-1" })
             raw.Should().NotContain(hidden);
 
         var item = JsonDocument.Parse(raw).RootElement.GetProperty("journal").GetProperty("items").EnumerateArray().Single();
@@ -96,7 +99,7 @@ public sealed class LedgerEndpointTests : IDisposable
             .Should().Equal("->Proposed", "Proposed>Submitting", "Submitting>Unknown");
         item.GetProperty("transitions").EnumerateArray().Last().GetProperty("source").GetString().Should().Be("CapitalDemo");
         var audit = item.GetProperty("audit").EnumerateArray().Single();
-        audit.GetProperty("id").GetString().Should().Be("audit-ledger-1");
+        audit.GetProperty("id").GetString().Should().Be("••••er-1");
         audit.GetProperty("refers").GetString().Should().Be("Order intent");
         audit.GetProperty("sensitiveRedacted").GetBoolean().Should().BeTrue();
         JsonDocument.Parse(raw).RootElement.GetProperty("alerts").EnumerateArray().Should().Contain(a => a.GetProperty("kind").GetString() == "UnknownOutcome");

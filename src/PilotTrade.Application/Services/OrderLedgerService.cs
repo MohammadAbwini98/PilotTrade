@@ -22,7 +22,7 @@ public sealed record LedgerConfirmView(string CommandRef, string Epic, string De
 public sealed record LedgerPageView(int Total, int Offset, int Limit, IReadOnlyList<LedgerEntryView> Items);
 public sealed record LedgerStartup(string Outcome, bool Complete, string? SuspensionReason);
 public sealed record LedgerView(
-    DateTimeOffset CheckedUtc, string Source, bool ExecutionEnabled, string AccountRef,
+    DateTimeOffset CheckedUtc, string Source, string RuntimeMode, bool SimulatedExecution, bool BrokerExecutionEnabled, string Execution, string Live, string AccountRef,
     LedgerStartup Startup, IReadOnlyDictionary<string, int> StatusCounts, int JournalTotal,
     IReadOnlyList<LedgerAlert> Alerts, LedgerPageView Journal,
     IReadOnlyList<LedgerPositionView>? Positions, IReadOnlyList<LedgerWorkingOrderView>? WorkingOrders,
@@ -150,7 +150,7 @@ public sealed class OrderLedgerService
                 e.CreatedUtc, e.SubmittedUtc, e.ConfirmedUtc, e.UpdatedUtc, e.RejectionReason,
                 transitions.Select(x => new LedgerTransitionView(x.FromState, x.ToState, x.OccurredUtc, x.Reason, x.Adapter == "Simulation" ? "Simulator" : x.Adapter)).ToList(),
                 page.Audit.Where(a => keys.Contains(a.CorrelationId))
-                    .Select(a => new LedgerAuditView(a.Id, a.OccurredUtc, a.Category, a.Action, a.Actor, a.SensitiveRedacted,
+                    .Select(a => new LedgerAuditView(Mask(a.Id)!, a.OccurredUtc, a.Category, a.Action, a.Actor, a.SensitiveRedacted,
                         a.CorrelationId == e.CommandId ? "Order command" : a.CorrelationId == e.IntentId ? "Order intent" : "Correlation")).ToList());
         }).ToList();
 
@@ -188,7 +188,11 @@ public sealed class OrderLedgerService
             alerts.Add(new("warn", "StartupReconciliation", $"Startup reconciliation: {state.Reconciliation}. {state.SuspensionReason}".Trim()));
 
         var counts = StatusGroups.ToDictionary(g => g, g => all.Count(e => Group(e.State) == g));
-        return new LedgerView(_clock.UtcNow, source, _broker.ExecutionEnabled, Mask(accountId)!,
+        // Simulated fills are never reported as Capital.com order permission; see RuntimeLabels.
+        var mode = _options.Mode;
+        var exec = _broker.ExecutionEnabled;
+        return new LedgerView(_clock.UtcNow, source, RuntimeLabels.Mode(mode), RuntimeLabels.SimulatedExecution(mode, exec),
+            RuntimeLabels.BrokerExecutionEnabled(mode, exec), RuntimeLabels.Execution(mode, exec), RuntimeLabels.Live, Mask(accountId)!,
             new LedgerStartup(state.Reconciliation.ToString(), state.ReconciliationComplete, state.SuspensionReason),
             counts, all.Count, alerts, new LedgerPageView(page.Total, query.Offset, query.Limit, items),
             positionViews, orderViews, confirms, errors);

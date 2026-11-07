@@ -1,6 +1,6 @@
 import css from './index.css?raw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { POLL } from './hooks/useOwnerSession'
@@ -80,7 +80,8 @@ let calls: Call[]
 
 // Task 02-06. Ledger fixtures carry masked IDs only, as the server sends them.
 const emptyLedger = {
-  checkedUtc: '2026-11-07T10:00:00Z', source: 'Simulator (no Capital.com orders)', executionEnabled: false, accountRef: '••••CC-A',
+  checkedUtc: '2026-11-07T10:00:00Z', source: 'Simulator (no Capital.com orders)', runtimeMode: 'Simulation', simulatedExecution: true, brokerExecutionEnabled: false,
+  execution: 'Simulated fills only. No Capital.com orders are sent.', live: 'Live locked', accountRef: '••••CC-A',
   startup: { outcome: 'Complete', complete: true, suspensionReason: null },
   statusCounts: { Pending: 0, Unknown: 0, Rejected: 0, Cancelled: 0, Completed: 0 }, journalTotal: 0, alerts: [],
   journal: { total: 0, offset: 0, limit: 25, items: [] }, positions: [], workingOrders: [], confirms: [], readErrors: [],
@@ -91,6 +92,23 @@ const ledgerEntry = (ref: string, state: string, statusGroup: string, reconcilia
   dealReference: null, dealIds: null, createdUtc: '2026-11-07T09:00:00Z', submittedUtc: null, confirmedUtc: null, updatedUtc: '2026-11-07T09:01:00Z',
   reason: null, transitions: [{ fromState: null, toState: 'Proposed', occurredUtc: '2026-11-07T09:00:00Z', reason: null, source: 'CapitalDemo' }], audit: [], ...extra,
 })
+
+// Task 02-07. Fixtures carry masked references only, as the server sends them.
+const emptyAudit = {
+  checkedUtc: '2026-11-07T10:00:00Z', total: 0, offset: 0, limit: 25, categories: [],
+  classification: 'Owner-only operational record.', retention: 'Kept in the local database on this machine with no automatic deletion in this build. There is no export.', items: [],
+}
+const auditItem = (n: number, extra: Record<string, unknown> = {}) => ({
+  reference: `••••ev-${n}`, occurredUtc: '2026-11-07T09:30:00Z', category: 'Risk', action: `Action${n}`, actor: 'owner', environment: 'Demo',
+  scope: 'This account', epic: null, correlationRef: null, detailsRedacted: true, sensitiveRedacted: false, ...extra,
+})
+const quietAlerts = { checkedUtc: '2026-11-07T10:00:00Z', alerts: [], note: 'Alerts show conditions observed now; nothing is emailed or messaged, and no action is taken automatically. Cleared conditions are not kept as history.' }
+const component = (key: string, label: string, status: string, detail = `${label} detail`) => ({ key, label, status, detail, asOfUtc: null })
+const diagnosticsView = {
+  checkedUtc: '2026-11-07T10:00:00Z', overall: 'Healthy', version: '0.2.0', runtimeMode: 'Simulation', execution: 'Simulated fills only. No Capital.com orders are sent.',
+  live: 'Live locked', accountRef: '••••', note: 'Read-only check.', failures: [],
+  components: [component('api', 'API', 'Healthy'), component('database', 'Database', 'Healthy'), component('ai', 'AI providers', 'Not Configured')],
+}
 
 function defaults(): Record<string, Route> {
   return {
@@ -124,6 +142,9 @@ function defaults(): Record<string, Route> {
     'GET /api/risk': { status: 200, body: riskView },
     'GET /api/kill-switch': { status: 200, body: killOff },
     'GET /api/ledger': { status: 200, body: emptyLedger },
+    'GET /api/audit': { status: 200, body: emptyAudit },
+    'GET /api/alerts': { status: 200, body: quietAlerts },
+    'GET /api/diagnostics': { status: 200, body: diagnosticsView },
   }
 }
 
@@ -624,7 +645,7 @@ describe('control center shell', () => {
 
   it('shows sections without a backend API as not available, with no sample figures', async () => {
     const user = await connect()
-    for (const [label, title] of [['Audit & Alerts', 'Audit log and alerts'], ['Strategy & AI Settings', 'Strategy and AI settings']]) {
+    for (const [label, title] of [['Strategy & AI Settings', 'Strategy and AI settings']]) {
       await goTo(user, label)
       expect(screen.getByRole('heading', { level: 2, name: `${title}: Not available` })).toBeTruthy()
       expect(document.querySelector('main')!.textContent).not.toMatch(/\d+\.\d{2}/)
@@ -1250,7 +1271,12 @@ describe('orders, positions and reconciliation (task 02-06)', () => {
     expect((await screen.findByLabelText('No journal entries')).textContent).toMatch(/^No orders in the journal yet/)
     expect(within(screen.getByRole('list', { name: 'Orders by status' })).getAllByRole('listitem').map(li => li.textContent))
       .toEqual(['Pending: 0', 'Unknown: 0', 'Rejected: 0', 'Cancelled: 0', 'Completed: 0'])
-    expect(screen.getByText('Order submission').nextElementSibling!.textContent).toBe('Disabled (read-only)')
+    // Simulated fills are never presented as Capital.com order permission.
+    expect(screen.getByText('Runtime mode').nextElementSibling!.textContent).toBe('Simulation')
+    expect(screen.getByText('Order submission').nextElementSibling!.textContent).toBe('Simulated fills only. No Capital.com orders are sent.')
+    expect(screen.getByText('Order submission').nextElementSibling!.className).toBe('tone-neutral')
+    expect(screen.getByText('Live trading').nextElementSibling!.textContent).toBe('Live locked')
+    expect(document.querySelector('main')!.textContent).not.toMatch(/enabled on the server/i)
     expect(screen.getByText('None held at the broker.')).toBeTruthy()
     const read = ledgerCalls()[0].url.searchParams
     expect([read.get('accountId'), read.get('limit'), read.get('offset')]).toEqual(['ACC-A', '25', '0'])
@@ -1273,7 +1299,7 @@ describe('orders, positions and reconciliation (task 02-06)', () => {
             { fromState: null, toState: 'Proposed', occurredUtc: '2026-11-07T09:00:00Z', reason: null, source: 'CapitalDemo' },
             { fromState: 'Proposed', toState: 'Submitting', occurredUtc: '2026-11-07T09:00:01Z', reason: null, source: 'CapitalDemo' },
           ],
-          audit: [{ id: 'audit-77', occurredUtc: '2026-11-07T09:00:02Z', category: 'Execution', action: 'Submit', actor: 'system', sensitiveRedacted: true, refers: 'Order intent' }] }),
+          audit: [{ id: '••••t-77', occurredUtc: '2026-11-07T09:00:02Z', category: 'Execution', action: 'Submit', actor: 'system', sensitiveRedacted: true, refers: 'Order intent' }] }),
         ledgerEntry('blkd', 'Confirmed', 'Completed', 'Blocked', { dealReference: '••••ef-2' }),
       ] },
       confirms: [{ commandRef: '••••sim1', epic: 'EURUSD', dealReference: '••••ef-9', dealIds: null, state: 'Confirmed', evidence: 'Simulator', confirmedUtc: null, updatedUtc: '2026-11-07T09:00:00Z' }],
@@ -1297,7 +1323,7 @@ describe('orders, positions and reconciliation (task 02-06)', () => {
     expect(within(history).getAllByRole('row', { hidden: true }).slice(1).map(r => r.textContent))
       .toEqual(['09:00:00 UTCcreatedProposedCapitalDemo', '09:00:01 UTCProposedSubmittingCapitalDemo'])
     expect(within(row('ambg')).getByRole('list', { name: 'Audit events for ••••ambg', hidden: true }).textContent)
-      .toBe('09:00:02 UTC Execution/Submit by system (event audit-77, matched by Order intent), details redacted')
+      .toBe('09:00:02 UTC Execution/Submit by system (event ••••t-77, matched by Order intent), details redacted')
     // Marked complete without a deal id: blocked, not completed.
     expect(cell('blkd', 4).textContent).toBe('Confirmed, not reconciled')
     expect(cell('blkd', 4).className).toBe('tone-danger')
@@ -1346,5 +1372,175 @@ describe('orders, positions and reconciliation (task 02-06)', () => {
     const wo = within(screen.getByRole('table', { name: 'Working orders' })).getAllByRole('row')[1]
     expect([...wo.querySelectorAll('td')].map(td => td.textContent).slice(0, 7))
       .toEqual(['••••wo-1', 'GOLD', 'Sell 2', 'Limit', 'not provided', 'Broker-observed (Capital.com Demo, read-only)', 'No'])
+  })
+})
+
+describe('audit, alerts and diagnostics (task 02-07)', () => {
+  const auditCalls = () => calls.filter(c => c.path === '/api/audit')
+  const lastAudit = () => auditCalls()[auditCalls().length - 1].url.searchParams
+
+  it('shows the quiet state, reads only with GETs scoped to the configured account, and has no action controls', async () => {
+    const user = await connect()
+    const writes = posts().length
+    await goTo(user, 'Audit & Alerts')
+    expect((await screen.findByLabelText('No alerts')).textContent).toBe('No alert conditions were observed in this check.')
+    expect((await screen.findByLabelText('No audit records')).textContent).toBe('No audit records for this account yet.')
+    expect(screen.getByText(/nothing is emailed or messaged/)).toBeTruthy()
+    expect(screen.getByText('Retention').nextElementSibling!.textContent).toMatch(/There is no export/)
+    expect(calls.filter(c => ['/api/audit', '/api/alerts'].includes(c.path)).every(c => c.method === 'GET' && c.url.searchParams.get('accountId') === 'ACC-A')).toBe(true)
+    expect([lastAudit().get('limit'), lastAudit().get('offset')]).toEqual(['25', '0'])
+    expect(posts().length).toBe(writes)
+    expect(screen.queryByRole('button', { name: /acknowledge|resolve|dismiss|export|download|email|delete|enable|live/i })).toBeNull()
+  })
+
+  it('lists real alerts by severity with UTC and labelled local time, and never shows invented history', async () => {
+    routes['GET /api/alerts'] = { status: 200, body: { ...quietAlerts, alerts: [
+      { key: 'KillSwitchEngaged', severity: 'danger', category: 'Kill switch', title: 'Kill switch engaged', detail: 'New orders are blocked.', observedUtc: '2026-11-07T09:00:00Z', source: 'Kill switch' },
+      { key: 'Ai:TimedOut', severity: 'warn', category: 'AI', title: 'AI review timed out', detail: '1 timed out.', observedUtc: null, source: 'Decision log' },
+    ] } }
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    const table = await screen.findByRole('table', { name: 'Current alerts' })
+    const rows = within(table).getAllByRole('row').slice(1)
+    expect(rows.map(r => r.querySelector('td')!.textContent)).toEqual(['Critical', 'Warning'])
+    expect(rows[0].querySelector('td')!.className).toBe('tone-danger')
+    expect(rows[0].textContent).toContain('2026-11-07 09:00:00 UTC')
+    expect(rows[0].textContent).toContain('Local time:')
+    expect(rows[1].textContent).toContain('Time not recorded')
+    expect(document.querySelector('main')!.textContent).not.toMatch(/resolved|acknowledged/i)
+  })
+
+  it('reports an alerts read failure as Unknown, not clear', async () => {
+    routes['GET /api/alerts'] = { status: 503, body: { error: 'Unavailable' } }
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    expect((await screen.findByText(/Alerts could not be read/)).textContent).toMatch(/Unknown, not clear/)
+    expect(screen.queryByLabelText('No alerts')).toBeNull()
+  })
+
+  it('shows masked references without details, filters, and pages with the applied filters', async () => {
+    routes['GET /api/audit'] = url => {
+      const offset = Number(url.searchParams.get('offset'))
+      return { status: 200, body: { ...emptyAudit, total: 30, offset, categories: ['Risk', 'Security'],
+        items: [auditItem(offset + 1, { sensitiveRedacted: true, correlationRef: '••••rr-1', epic: 'EURUSD', scope: 'System' })] } }
+    }
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    const table = await screen.findByRole('table', { name: 'Audit records' })
+    const row = within(table).getAllByRole('row')[1]
+    expect(row.textContent).toContain('••••ev-1')
+    expect(row.textContent).toContain('Sensitive values redacted')
+    expect(row.textContent).toContain('••••rr-1')
+    expect(row.textContent).toContain('System')
+    expect(document.querySelector('main')!.textContent).not.toMatch(/detailsJson|\{"/)
+
+    fireEvent.change(screen.getByLabelText('From (UTC date)'), { target: { value: '2026-11-01' } })
+    fireEvent.change(screen.getByLabelText('To (UTC date)'), { target: { value: '2026-11-07' } })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Category' }), 'Security')
+    await user.type(screen.getByRole('textbox', { name: 'Instrument' }), 'EURUSD')
+    await user.type(screen.getByRole('textbox', { name: 'Correlation ID' }), 'corr-1')
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'Kill')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() => expect(lastAudit().get('category')).toBe('Security'))
+    const applied = lastAudit()
+    expect([applied.get('from'), applied.get('to'), applied.get('epic'), applied.get('correlation'), applied.get('q'), applied.get('accountId')])
+      .toEqual(['2026-11-01T00:00:00Z', '2026-11-07T23:59:59.999Z', 'EURUSD', 'corr-1', 'Kill', 'ACC-A'])
+
+    // An edit that was not applied does not leak into paging.
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'X')
+    await user.click(await screen.findByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(lastAudit().get('offset')).toBe('25'))
+    expect([lastAudit().get('q'), lastAudit().get('category')]).toEqual(['Kill', 'Security'])
+    expect(await screen.findByText('••••ev-26')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(lastAudit().get('category')).toBeNull())
+    expect(lastAudit().get('offset')).toBe('0')
+  })
+
+  it('refuses a reversed date range in the browser without sending it', async () => {
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    await screen.findByLabelText('No audit records')
+    const before = auditCalls().length
+    fireEvent.change(screen.getByLabelText('From (UTC date)'), { target: { value: '2026-11-07' } })
+    fireEvent.change(screen.getByLabelText('To (UTC date)'), { target: { value: '2026-11-01' } })
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect((await screen.findByText(/must not be after/)).getAttribute('role')).toBe('alert')
+    expect(auditCalls().length).toBe(before)
+  })
+
+  it('reports an audit read failure', async () => {
+    routes['GET /api/audit'] = { status: 400, body: { error: 'InvalidFilter' } }
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    expect((await screen.findByText(/Audit log could not be read/)).getAttribute('role')).toBe('alert')
+    expect(screen.queryByRole('table', { name: 'Audit records' })).toBeNull()
+  })
+
+  it('drops a slow audit reply that an applied filter has replaced', async () => {
+    const slow = deferred<Reply>()
+    let first = true
+    routes['GET /api/audit'] = url => {
+      if (first) { first = false; return slow.promise }
+      return { status: 200, body: { ...emptyAudit, total: 1, items: [auditItem(2, { category: url.searchParams.get('category') ?? 'Risk' })] } }
+    }
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'new')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await screen.findByText('••••ev-2')
+    slow.resolve({ status: 200, body: { ...emptyAudit, total: 1, items: [auditItem(1)] } })
+    await new Promise(r => setTimeout(r, 20))
+    expect(screen.queryByText('••••ev-1')).toBeNull()
+    expect(screen.getByText('••••ev-2')).toBeTruthy()
+  })
+
+  it('shows diagnostics statuses with their tones and no order controls', async () => {
+    routes['GET /api/diagnostics'] = { status: 200, body: { ...diagnosticsView, overall: 'Unavailable',
+      components: [...diagnosticsView.components, component('broker', 'Broker', 'Unavailable', 'The broker could not be reached.'), component('marketFeed', 'Market feed', 'Degraded'), component('reconciliation', 'Reconciliation', 'Unknown')],
+      failures: [{ occurredUtc: '2026-11-07T09:59:00Z', source: 'AI review', detail: 'Timed out' }] } }
+    const user = await connect()
+    await goTo(user, 'System')
+    const table = await screen.findByRole('table', { name: 'Component status' })
+    const status = (label: string) => within(table).getByRole('row', { name: `Component ${label}` }).querySelectorAll('td')[1] as HTMLElement
+    expect([status('API').className, status('Broker').className, status('Market feed').className, status('Reconciliation').className, status('AI providers').className])
+      .toEqual(['tone-ok', 'tone-danger', 'tone-warn', 'tone-neutral', 'tone-neutral'])
+    expect(status('AI providers').textContent).toBe('Not Configured')
+    expect(screen.getByText('Overall').nextElementSibling!.textContent).toBe('Unavailable')
+    expect(screen.getByText('Version').nextElementSibling!.textContent).toBe('0.2.0')
+    expect(within(screen.getByRole('list', { name: 'Operational failures' })).getByRole('listitem').textContent).toBe('2026-11-07 09:59:00 UTC: AI review: Timed out')
+    const read = calls.filter(c => c.path === '/api/diagnostics')
+    expect(read.every(c => c.method === 'GET' && c.url.searchParams.get('accountId') === 'ACC-A')).toBe(true)
+    expect(screen.queryByRole('button', { name: /enable|live|unlock|submit|order/i })).toBeNull()
+  })
+
+  it('shows a diagnostics failure as Unknown and keeps no stale status', async () => {
+    const user = await connect()
+    await goTo(user, 'System')
+    await screen.findByRole('table', { name: 'Component status' })
+    routes['GET /api/diagnostics'] = { status: 503, body: { error: 'Unavailable' } }
+    await user.click(screen.getByRole('button', { name: 'Run diagnostics' }))
+    expect((await screen.findByText(/Diagnostics could not be read/)).textContent).toMatch(/Unknown/)
+    expect(screen.queryByRole('table', { name: 'Component status' })).toBeNull()
+  })
+
+  it('drops an alerts reply that arrives after disconnect', async () => {
+    const slow = deferred<Reply>()
+    routes['GET /api/alerts'] = () => slow.promise
+    const user = await connect()
+    await goTo(user, 'Audit & Alerts')
+    await waitFor(() => expect(calls.some(c => c.path === '/api/alerts')).toBe(true))
+    await goTo(user, 'System')
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
+    slow.resolve({ status: 200, body: { ...quietAlerts, alerts: [{ key: 'Late', severity: 'danger', category: 'Late', title: 'Late alert', detail: '', observedUtc: null, source: 'x' }] } })
+    await new Promise(r => setTimeout(r, 20))
+    routes['GET /api/alerts'] = { status: 200, body: quietAlerts }
+    cleanup()
+    window.history.replaceState(null, '', '/')
+    const again = await connect()
+    await goTo(again, 'Audit & Alerts')
+    await screen.findByLabelText('No alerts')
+    expect(screen.queryByText('Late alert')).toBeNull()
   })
 })

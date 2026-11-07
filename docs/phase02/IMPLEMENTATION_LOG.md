@@ -441,3 +441,73 @@ No order request is sent anywhere in this task. The ledger only reads. Demo orde
 | CI on `cf3d32b` | **passed** (run 42326390010) |
 
 Recommendation: **PARTIAL**. The code, local checks and Windows CI (run 42326390010 on `cf3d32b`) pass. Still open: the owner's visual check.
+
+## 02-06 corrections
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Application/Services/RuntimeLabels.cs` (new) | One place for the mode and order-submission labels. Capital.com order permission is true only in Capital.com Demo with an execution-enabled adapter. Simulation with execution reads "Simulated fills only. No Capital.com orders are sent." |
+| `src/PilotTrade.Application/Services/OrderLedgerService.cs` | The ledger view replaces `executionEnabled` with `runtimeMode`, `simulatedExecution`, `brokerExecutionEnabled`, `execution` and `live`. Audit-event ids are masked like every other id. |
+| `src/PilotTrade.Infrastructure/Persistence/EfOrderLedgerReader.cs` | The journal and the confirmations are paged in the database: environment, account and filters run in SQL, only the key and time of the matching rows are read to order them (SQLite cannot order a `DateTimeOffset`), and full rows are read for the requested page alone, still filtered by environment and account. |
+| `tests/PilotTrade.UnitTests/OrderLedgerTests.cs`, `tests/PilotTrade.IntegrationTests/LedgerEndpointTests.cs` | Assert the new fields, a masked audit id, and that a simulator with execution enabled never reports Capital.com permission (new theory over all four mode and execution combinations, and a test on the real simulator adapter). |
+| `src/PilotTrade.Web/src/features/orders/OrdersPage.tsx`, `types/api.ts`, `App.test.tsx` | The page shows Runtime mode, Order submission (grey unless the server reports Capital.com permission) and Live trading. |
+
+API change: `GET /api/ledger` no longer returns `executionEnabled`; it returns the five fields above. No other client used it.
+
+## 02-07: Audit, alerts and diagnostics
+
+### What changed
+
+| Path | Role |
+|---|---|
+| `src/PilotTrade.Domain/Audit/AuditQueries.cs` (new) | `IAuditReader` and `IDatabaseHealth`. An audit record carries no details. |
+| `src/PilotTrade.Infrastructure/Audit/EfAuditReader.cs` (new) | Reads this account's events and system events with no account, never another account's. Category, instrument and correlation filters and the text search run in SQL; the period, order and page use only ids and times, and full rows (without `DetailsJson`) are read for the page alone. `EfDatabaseHealth` checks the connection, a read and pending migrations. |
+| `src/PilotTrade.Application/Services/OperationsMonitorService.cs` (new) | **Alerts** from conditions the server can observe now: kill switch engaged, startup reconciliation incomplete, ledger alerts (unknown outcome, blocked reconciliation, not held, not in journal, other account), risk information that is stale or missing (or could not be determined), broker read errors, AI failures (timed out, rejected, unavailable) and risk vetoes in the latest 200 decisions for this account, missing Demo credentials, and any check that itself failed. Nothing is stored, acknowledged or sent. **Diagnostics:** API, database, broker (a 10 s account read in Capital.com Demo with credentials), market feed, reconciliation, kill switch, AI (Not Configured: runtime AI is not connected) and credentials (presence only), each Healthy, Degraded, Unavailable, Not Configured or Unknown, plus the latest AI failures. Broker errors are reported with a fixed message, never the broker's text. |
+| `src/PilotTrade.Api/Program.cs` | **API change:** `GET /api/audit?accountId=&from=&to=&category=&epic=&correlation=&q=&limit=&offset=`, `GET /api/alerts?accountId=` and `GET /api/diagnostics?accountId=`. Each needs the owner token and the configured account. Bad audit filters get 400 `InvalidFilter` (dates in ISO form with from ≤ to, limit 1 to 100, category letters, digits, `_` and `-` up to 64, epic as in the ledger, correlation up to 128 without spaces, search up to 64). Audit items carry masked `reference` and `correlationRef`, `scope` (System or This account) and `detailsRedacted: true`; the response names the classification and retention. There is no write route. |
+| `tests/PilotTrade.IntegrationTests/OperationsEndpointTests.cs` (new) | 8 integration tests (below). |
+| `src/PilotTrade.Web/src/types/api.ts`, `hooks/useOwnerSession.ts`, `lib/format.ts` | Types, state and loaders for audit, alerts and diagnostics. Each has its own failure and loading flag; only the newest reply for the current account lands; a failed read clears the view; all three are cleared on account switch and disconnect. UTC timestamps with a labelled local time. |
+| `src/PilotTrade.Web/src/features/audit/AuditPage.tsx` (new), `app/Shell.tsx`, `features/pending/PendingPages.tsx` | The Audit & Alerts page replaces its "Not available" placeholder. |
+| `src/PilotTrade.Web/src/features/system/SystemPage.tsx` | Diagnostics panel with Run diagnostics. |
+| `src/PilotTrade.Web/src/App.test.tsx` | 10 new tests (below). |
+| `src/PilotTrade.Api/wwwroot/*` | rebuilt asset `index-PMPKwFcf.js`; the old `index-NS09fQzT.js` is removed |
+
+No order request is sent anywhere in this task. All three endpoints and both pages only read. Demo order submission stays disabled and Live stays locked.
+
+### Acceptance
+
+- **Read-only and owner-scoped:** integration tests check that each endpoint refuses a missing token (401) and another account (403), and that POST, PUT, DELETE and PATCH are not routed. Frontend tests check that every request is a GET with the configured account and that no acknowledge, resolve, export, delete, enable or live control exists.
+- **No secrets:** an integration test writes audit events with sensitive details and full ids and checks that the response has neither the details nor the full ids, and that another account's event is not returned.
+- **Real alerts only:** an integration test records AI failures for this account and another, and checks that only this account's failures alert; with nothing wrong, the only alert is the kill switch, present exactly when it is engaged. A Demo test checks the missing-credentials and unknown-outcome alerts.
+- **Diagnostics:** an integration test checks the statuses in Simulation; another scripts a broker failure and checks Unavailable with a fixed message.
+- **Frontend:** quiet state, alert severities and times, filters and paging with the applied filters, a reversed date range refused without a request, read failures shown as Unknown, a slow audit reply dropped, a late alerts reply after disconnect dropped, diagnostics tones and a diagnostics failure that keeps no stale status.
+
+### Limits
+
+- **No export.** The prompt asks for a redacted export; this build has none, and the retention text says so. Left for a later task.
+- **No audit severity.** Audit records have no severity field, so the explorer cannot filter by it. Alerts have severity.
+- **No alert history.** Alerts are what the server observes at the time of the check. Cleared conditions are not kept, and there is no acknowledgement. Nothing is emailed or messaged.
+- The audit text search is case-sensitive (SQLite).
+- AI shows Not Configured because runtime AI is not connected; AI failure alerts come from recorded decisions only.
+- `OperationsMonitorService` is covered by integration tests rather than its own unit tests.
+- Not checked: the owner's visual check, Edge and Chrome by hand, and a real Demo account.
+
+### Migration, restart, backup and rollback
+
+- No migration. Restart the API to load the new endpoints. Rollback: run the previous build; nothing in the database changed.
+
+### Results after 02-06 corrections and 02-07
+
+| Check | Result |
+|---|---|
+| `npx vitest run` | 89/89 passed (79 earlier + 10 new) |
+| `npx tsc --noEmit`, `npm run lint` | clean |
+| `npm run build` | new `wwwroot` asset, committed with the source |
+| `dotnet test PilotTrade.slnx` | unit 193/193 (4 new); integration 272 passed, 3 skipped, 0 failed (275; 8 new) |
+| `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL (Windows PowerShell 5.1; PowerShell 7 is not installed on this machine) |
+| `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL (Windows PowerShell 5.1) |
+| Windows package (`package-windows.ps1`, unzip, `verify-package.ps1`, local Release publish) | passed: Release publish, ZIP built, 369 files verified against SHA256SUMS, new asset included |
+| `scripts/secret-scan.ps1` | no findings in 225 files (after staging) |
+| CI | not run: the commit is local and waits for the owner's push approval |
+
+Recommendation: 02-05 stays **PASS**. 02-06 stays **PARTIAL** (owner's visual check, CI on the correction commit). 02-07 is **PARTIAL** (owner's visual check, CI, no export, no audit severity).
+

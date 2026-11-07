@@ -60,8 +60,8 @@ function Entry({ e }: { e: LedgerEntry }) {
           </table>
           {e.audit.length === 0 ? <p className="muted">No audit events refer to this order.</p> : (
             <ul aria-label={`Audit events for ${e.commandRef}`}>
-              {e.audit.map(a => (
-                <li key={a.id}>{utcIso(a.occurredUtc)} {a.category}/{a.action} by {a.actor} (event {a.id}, matched by {a.refers}){a.sensitiveRedacted ? ', details redacted' : ''}</li>
+              {e.audit.map((a, i) => (
+                <li key={i}>{utcIso(a.occurredUtc)} {a.category}/{a.action} by {a.actor} (event {a.id}, matched by {a.refers}){a.sensitiveRedacted ? ', details redacted' : ''}</li>
               ))}
             </ul>
           )}
@@ -95,7 +95,9 @@ export function OrdersPage({ s }: { s: ConnectedSession }) {
             <dl aria-label="Ledger state">
               <dt>Source</dt><dd>{ledger.source}</dd>
               <dt>Account</dt><dd>{ledger.accountRef}</dd>
-              <dt>Order submission</dt><dd className={ledger.executionEnabled ? 'tone-danger' : 'tone-neutral'}>{ledger.executionEnabled ? 'Enabled on the server' : 'Disabled (read-only)'}</dd>
+              <dt>Runtime mode</dt><dd>{ledger.runtimeMode}</dd>
+              <dt>Order submission</dt><dd className={ledger.brokerExecutionEnabled ? 'tone-danger' : 'tone-neutral'}>{ledger.execution}</dd>
+              <dt>Live trading</dt><dd className="tone-neutral">{ledger.live}</dd>
               <dt>Startup reconciliation</dt><dd className={ledger.startup.complete ? 'tone-ok' : 'tone-warn'}>{ledger.startup.outcome}{ledger.startup.suspensionReason ? `: ${ledger.startup.suspensionReason}` : ''}</dd>
               <dt>Checked (UTC)</dt><dd>{utcIso(ledger.checkedUtc)}</dd>
             </dl>

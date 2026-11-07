@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import type { MouseEvent } from 'react'
 import { Badge } from '../components/Badge'
 import { AiDecisionsPage } from '../features/ai/AiDecisionsPage'
-import { AuditPage, StrategyPage } from '../features/pending/PendingPages'
+import { AuditPage } from '../features/audit/AuditPage'
+import { StrategyPage } from '../features/pending/PendingPages'
 import { BrokerPage } from '../features/broker/BrokerPage'
 import { MarketsPage } from '../features/markets/MarketsPage'
 import { OrdersPage } from '../features/orders/OrdersPage'
@@ -23,7 +24,7 @@ function Page({ id, s }: { id: PageId; s: ConnectedSession }) {
     case 'ai': return <AiDecisionsPage s={s} />
     case 'risk': return <RiskPage s={s} />
     case 'orders': return <OrdersPage s={s} />
-    case 'audit': return <AuditPage />
+    case 'audit': return <AuditPage s={s} />
     case 'broker': return <BrokerPage s={s} />
     case 'strategy': return <StrategyPage />
     case 'system': return <SystemPage s={s} />

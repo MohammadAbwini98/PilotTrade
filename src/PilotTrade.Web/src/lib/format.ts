@@ -62,6 +62,10 @@ export const tradingModeLabel = (mode: string) => TRADING_MODE[mode] ?? { text: 
 
 export const FEED_TONE: Record<string, Tone> = { Healthy: 'ok', Stale: 'warn', Disconnected: 'danger', Unknown: 'neutral' }
 
+// Task 02-07: a full UTC timestamp, and the browser's local time labelled as such.
+export const utcStamp = (iso: string | null | undefined) => (iso ? `${new Date(iso).toISOString().slice(0, 19).replace('T', ' ')} UTC` : 'not recorded')
+export const localStamp = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '')
+export const DIAGNOSTIC_TONE: Record<string, Tone> = { Healthy: 'ok', Degraded: 'warn', Unavailable: 'danger', 'Not Configured': 'neutral', Unknown: 'neutral' }
 export const utcIso = (iso: string | null | undefined) => (iso ? utcTime(new Date(iso)) : 'never')
 
 // Task 02-03. Asset classes and market states as the monitor sends them (names), and as the metadata sends them (numbers).

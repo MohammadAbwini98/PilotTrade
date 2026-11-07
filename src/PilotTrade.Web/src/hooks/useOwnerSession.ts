@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, NotFound, createApiClient } from '../api/client'
 import type { LinkState } from '../api/client'
 import type {
-  Account, AccountSummary, AiStatus, ClearCheck, CredentialStatus, KillSwitchState, LedgerFilter, LedgerView, RiskView, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
+  Account, AccountSummary, AiStatus, AlertsView, AuditFilter, AuditPageView, ClearCheck, DiagnosticsView, CredentialStatus, KillSwitchState, LedgerFilter, LedgerView, RiskView, DecisionFilter, DecisionList, DecisionRecord, InstrumentMetadata, InstrumentSummary, MarketPolicy, MarketWatch, NoOrderEvidence, OperationsStatus,
   Position, ProbeEvidence, Runtime, Selection, SnapshotResult, Watchlist, WorkingOrder,
 } from '../types/api'
 
 const q = encodeURIComponent
 export const LEDGER_PAGE = 25
+export const AUDIT_PAGE = 25
 
 // The overview refreshes itself on this interval. After a failed update the wait doubles, up to the maximum, and returns to normal after a success.
 // Tests shorten these; the app never changes them.
@@ -72,6 +73,26 @@ export function useOwnerSession() {
   const [ledger, setLedger] = useState<LedgerView | null>(null)
   const [ledgerFailure, setLedgerFailure] = useState('')
   const ledgerGeneration = useRef(0)
+  // Task 02-07. Audit, alerts and diagnostics each keep their own reply, failure and loading flag; only the newest reply for the
+  // current account lands, so a slow older reply never overwrites a newer one.
+  const [audit, setAudit] = useState<AuditPageView | null>(null)
+  const [auditFailure, setAuditFailure] = useState('')
+  const [auditLoading, setAuditLoading] = useState(false)
+  const auditGeneration = useRef(0)
+  const [alerts, setAlerts] = useState<AlertsView | null>(null)
+  const [alertsFailure, setAlertsFailure] = useState('')
+  const [alertsLoading, setAlertsLoading] = useState(false)
+  const alertsGeneration = useRef(0)
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsView | null>(null)
+  const [diagnosticsFailure, setDiagnosticsFailure] = useState('')
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
+  const diagnosticsGeneration = useRef(0)
+  const resetOperations = () => {
+    auditGeneration.current++; alertsGeneration.current++; diagnosticsGeneration.current++
+    setAudit(null); setAuditFailure(''); setAuditLoading(false)
+    setAlerts(null); setAlertsFailure(''); setAlertsLoading(false)
+    setDiagnostics(null); setDiagnosticsFailure(''); setDiagnosticsLoading(false)
+  }
 
   const guard = async (work: () => Promise<void>) => {
     setErr('')
@@ -157,6 +178,7 @@ export function useOwnerSession() {
     setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
     ledgerGeneration.current++
     setLedger(null); setLedgerFailure('')
+    resetOperations()
     setAccountId(id)
     accountRef.current = id
     setSelection(null)
@@ -196,6 +218,7 @@ export function useOwnerSession() {
     setRisk(null); setRiskFailure(''); setKillSwitch(null); setKillFailure(''); setKillReadFailure(''); setKillMessage(''); setRefusedChecks(null)
     ledgerGeneration.current++
     setLedger(null); setLedgerFailure('')
+    resetOperations()
     ownerToken.current = ''
     accountRef.current = ''
     setStatus(null); setStatusFailed(false); setUpdateFailure(null)
@@ -396,6 +419,34 @@ export function useOwnerSession() {
     }
   }
 
+  // Read-only: one GET each. A failed read clears the view, so stale alerts or statuses are never shown as current.
+  const readLatest = async <T>(gen: { current: number }, path: (id: string) => string, set: (v: T | null) => void, fail: (m: string) => void, loading: (b: boolean) => void) => {
+    const id = accountRef.current
+    if (!id) return
+    const current = ++gen.current
+    loading(true)
+    try {
+      const view = await api.get<T>(path(id))
+      if (current !== gen.current || id !== accountRef.current) return
+      set(view); fail('')
+    } catch (e) {
+      if (current !== gen.current || id !== accountRef.current) return
+      set(null); fail(message(e))
+    } finally {
+      if (current === gen.current) loading(false)
+    }
+  }
+
+  const loadAudit = (f: AuditFilter) => {
+    const filter = [
+      f.from && `&from=${q(`${f.from}T00:00:00Z`)}`, f.to && `&to=${q(`${f.to}T23:59:59.999Z`)}`, f.category && `&category=${q(f.category)}`,
+      f.epic.trim() && `&epic=${q(f.epic.trim())}`, f.correlation.trim() && `&correlation=${q(f.correlation.trim())}`, f.q.trim() && `&q=${q(f.q.trim())}`,
+    ].join('')
+    return readLatest<AuditPageView>(auditGeneration, id => `/api/audit?accountId=${q(id)}${filter}&limit=${AUDIT_PAGE}&offset=${Math.max(0, f.offset)}`, setAudit, setAuditFailure, setAuditLoading)
+  }
+  const loadAlerts = () => readLatest<AlertsView>(alertsGeneration, id => `/api/alerts?accountId=${q(id)}`, setAlerts, setAlertsFailure, setAlertsLoading)
+  const loadDiagnostics = () => readLatest<DiagnosticsView>(diagnosticsGeneration, id => `/api/diagnostics?accountId=${q(id)}`, setDiagnostics, setDiagnosticsFailure, setDiagnosticsLoading)
+
   const testConnection = () => guard(async () => setEvidence(await api.post<ProbeEvidence>('/api/demo/test-connection', {})))
 
   const loadCredentialStatus = () => guard(async () => setCredentials(await api.get<CredentialStatus>('/api/demo/credential-status')))
@@ -404,9 +455,10 @@ export function useOwnerSession() {
     runtime, accounts, accountId, account, positions, orders, lastRefresh, link, status, statusFailed, updateFailure, instruments, searched, selection, instrument,
     snapshot, evidence, noOrders, credentials, watchlist, watch, policy, aiStatus, decisions, decision, busy: busy > 0, err,
     risk, riskFailure, killSwitch, killFailure, killReadFailure, killMessage, refusedChecks, killBusy, ledger, ledgerFailure,
+    audit, auditFailure, auditLoading, alerts, alertsFailure, alertsLoading, diagnostics, diagnosticsFailure, diagnosticsLoading,
     connect, disconnect, switchAccount, refreshAccount, search, select, buildSnapshot, checkNoOrders, testConnection, loadCredentialStatus,
     openMarkets, refreshWatch, addToWatchlist, removeFromWatchlist, loadDecisions, openDecision, closeDecision,
-    loadRisk, engageKillSwitch, clearKillSwitch, loadLedger,
+    loadRisk, engageKillSwitch, clearKillSwitch, loadLedger, loadAudit, loadAlerts, loadDiagnostics,
   }
 }
 

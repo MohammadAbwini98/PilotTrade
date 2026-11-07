@@ -111,10 +111,30 @@ export type LedgerWorkingOrder = {
 }
 export type LedgerConfirm = { commandRef: string; epic: string; dealReference: string; dealIds: string | null; state: string; evidence: string; confirmedUtc: string | null; updatedUtc: string }
 export type LedgerView = {
-  checkedUtc: string; source: string; executionEnabled: boolean; accountRef: string
+  // runtimeMode, execution and live are server wording: simulated fills are never Capital.com order permission.
+  checkedUtc: string; source: string; runtimeMode: string; simulatedExecution: boolean; brokerExecutionEnabled: boolean
+  execution: string; live: string; accountRef: string
   startup: { outcome: string; complete: boolean; suspensionReason: string | null }
   statusCounts: Record<string, number>; journalTotal: number; alerts: LedgerAlert[]
   journal: { total: number; offset: number; limit: number; items: LedgerEntry[] }
   positions: LedgerPosition[] | null; workingOrders: LedgerWorkingOrder[] | null; confirms: LedgerConfirm[]; readErrors: string[]
 }
 export type LedgerFilter = { q: string; epic: string; status: string; offset: number }
+
+// Task 02-07. Audit records never carry their stored details; references are masked to the last four characters.
+export type AuditFilter = { from: string; to: string; category: string; epic: string; correlation: string; q: string; offset: number }
+export type AuditItem = {
+  reference: string | null; occurredUtc: string; category: string; action: string; actor: string; environment: string
+  scope: string; epic: string | null; correlationRef: string | null; detailsRedacted: boolean; sensitiveRedacted: boolean
+}
+export type AuditPageView = {
+  checkedUtc: string; total: number; offset: number; limit: number; categories: string[]; classification: string; retention: string; items: AuditItem[]
+}
+export type AlertItem = { key: string; severity: string; category: string; title: string; detail: string; observedUtc: string | null; source: string }
+export type AlertsView = { checkedUtc: string; alerts: AlertItem[]; note: string }
+export type DiagnosticComponent = { key: string; label: string; status: string; detail: string; asOfUtc: string | null }
+export type OperationalFailure = { occurredUtc: string | null; source: string; detail: string }
+export type DiagnosticsView = {
+  checkedUtc: string; overall: string; version: string; runtimeMode: string; execution: string; live: string; accountRef: string
+  components: DiagnosticComponent[]; failures: OperationalFailure[]; note: string
+}

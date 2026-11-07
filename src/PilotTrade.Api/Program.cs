@@ -84,6 +84,10 @@ builder.Services.AddSingleton<OrderReconciliationService>();
 builder.Services.AddSingleton<KillSwitchService>();
 builder.Services.AddSingleton<RiskMonitorService>();
 builder.Services.AddSingleton<OrderLedgerService>();
+// Task 02-07: read-only audit search, current-state alerts and diagnostics.
+builder.Services.AddSingleton<IAuditReader>(sp => new EfAuditReader(sp.GetRequiredService<DbContextOptions<PilotTradeDbContext>>()));
+builder.Services.AddSingleton<IDatabaseHealth>(sp => new EfDatabaseHealth(sp.GetRequiredService<DbContextOptions<PilotTradeDbContext>>()));
+builder.Services.AddSingleton<OperationsMonitorService>();
 builder.Services.AddHostedService<StartupReconciliationService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173").AllowAnyHeader().AllowAnyMethod()));
@@ -417,6 +421,64 @@ api.MapGet("/ledger", async (string accountId, string? epic, string? status, str
         return Results.BadRequest(new { error = "InvalidFilter", statusGroups = OrderLedgerService.StatusGroups, maxLimit = OrderLedgerService.MaxLimit });
     return Results.Ok(await ledger.BuildAsync(accountId, new LedgerQuery(epic, OrderLedgerService.StatesFor(status), q, skip, take), ct));
 });
+
+// Task 02-07: the audit explorer. Reads this account's events and system events (no account) only; never another account's,
+// and never the stored details, which may name protected values. Identifiers are masked. There is no write route.
+api.MapGet("/audit", async (string accountId, string? from, string? to, string? category, string? epic, string? correlation, string? q, int? limit, int? offset,
+    BrokerRuntimeOptions options, IAuditReader reader, IClock clock, CancellationToken ct) =>
+{
+    if (RefuseAccount(options, accountId) is { } refused) return refused;
+    var take = limit ?? 25;
+    var skip = offset ?? 0;
+    static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+    category = Clean(category); epic = Clean(epic); correlation = Clean(correlation); q = Clean(q);
+    DateTimeOffset? fromUtc = null, toUtc = null;
+    var badDate = false;
+    if (Clean(from) is { } f) { if (DateTimeOffset.TryParse(f, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var v)) fromUtc = v.ToUniversalTime(); else badDate = true; }
+    if (Clean(to) is { } t) { if (DateTimeOffset.TryParse(t, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var v)) toUtc = v.ToUniversalTime(); else badDate = true; }
+    if (badDate || (fromUtc is not null && toUtc is not null && fromUtc > toUtc)
+        || take is < 1 or > 100 || skip is < 0 or > 1_000_000
+        || (category is not null && (category.Length > 64 || !category.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')))
+        || (epic is not null && (epic.Length > 64 || !epic.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-')))
+        || (correlation is not null && (correlation.Length > 128 || correlation.Any(char.IsWhiteSpace)))
+        || (q is not null && q.Length > 64))
+        return Results.BadRequest(new { error = "InvalidFilter", maxLimit = 100 });
+    var page = await reader.ReadAsync(new AuditQuery(accountId, fromUtc, toUtc, category, epic, correlation, q, skip, take), ct);
+    return Results.Ok(new
+    {
+        checkedUtc = clock.UtcNow,
+        total = page.Total,
+        offset = skip,
+        limit = take,
+        categories = page.Categories,
+        classification = "Internal operational record. Stored details are never shown; identifiers are masked to their last four characters.",
+        retention = "Kept in the local database on this machine with no automatic deletion in this build. There is no export.",
+        items = page.Items.Select(a => new
+        {
+            reference = OrderLedgerService.Mask(a.Id),
+            occurredUtc = a.OccurredUtc,
+            category = a.Category,
+            action = a.Action,
+            actor = a.Actor,
+            environment = a.Environment,
+            scope = a.AccountId is null ? "System" : "This account",
+            epic = a.Epic,
+            correlationRef = OrderLedgerService.Mask(a.CorrelationId),
+            detailsRedacted = true,
+            sensitiveRedacted = a.SensitiveRedacted,
+        }),
+    });
+});
+
+// Task 02-07: current-state alerts, shown on the dashboard only. Nothing is sent and no action is taken.
+api.MapGet("/alerts", async (string accountId, BrokerRuntimeOptions options, OperationsMonitorService ops, CancellationToken ct) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(await ops.AlertsAsync(accountId, ct)));
+
+// Task 02-07: read-only diagnostics with fixed, sanitized messages.
+api.MapGet("/diagnostics", async (string accountId, BrokerRuntimeOptions options, OperationsMonitorService ops, CancellationToken ct) =>
+    RefuseAccount(options, accountId) ?? Results.Ok(await ops.DiagnosticsAsync(accountId,
+        typeof(Program).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion?.Split('+')[0] ?? "unknown", ct)));
 
 // Task 02-05: the persisted kill-switch state, and the checks a clear would have to pass now. Reading it changes nothing.
 api.MapGet("/kill-switch", async (string accountId, BrokerRuntimeOptions options, ITradingControl control, KillSwitchService ks, IClock clock, CancellationToken ct) =>
