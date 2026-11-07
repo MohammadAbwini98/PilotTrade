@@ -425,7 +425,7 @@ No order request is sent anywhere in this task. The ledger only reads. Demo orde
 
 - Only this app's journal is shown. Broker activity history (fills and closures read from Capital.com) is not read, so a deal the broker no longer holds is `Not held`, never `Closed`.
 - Order submission is disabled, so in normal use the journal is empty.
-- Not checked: the owner's visual check, a real Demo account, and Windows CI on this commit.
+- Not checked: the owner's visual check and a real Demo account.
 
 ### Results after 02-06
 
@@ -437,6 +437,7 @@ No order request is sent anywhere in this task. The ledger only reads. Demo orde
 | `dotnet test PilotTrade.slnx` | unit 189/189 (21 new); integration 264 passed, 3 skipped, 0 failed (267; 6 new) |
 | `scripts/release-checks.tests.ps1` | 46 PASS, 0 FAIL |
 | `scripts/smoke-helpers.tests.ps1` | 20 PASS, 0 FAIL |
-| `scripts/secret-scan.ps1` | run after staging; result in the commit handoff |
+| `scripts/secret-scan.ps1` | no findings in 219 files (after staging) |
+| CI on `cf3d32b` | **passed** (run 42326390010) |
 
-Recommendation: **PARTIAL**. The code and local checks pass. Still open: Windows CI on this commit and the owner's visual check.
+Recommendation: **PARTIAL**. The code, local checks and Windows CI (run 42326390010 on `cf3d32b`) pass. Still open: the owner's visual check.
